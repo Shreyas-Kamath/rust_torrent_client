@@ -1,0 +1,103 @@
+use crate::client::ClientCommand;
+use crate::parser::Torrent;
+use crate::scheduler::{Scheduler, SchedulerEvent};
+use crate::session::{Session, SessionEvent};
+use crate::trackers::{Tracker, TrackerCommand};
+
+use std::collections::HashSet;
+use tokio::sync::mpsc;
+
+impl Session {
+    pub fn new(torrent: Torrent, http_client: reqwest::Client) -> Self {
+        Self {
+            torrent,
+            trackers: Vec::new(),
+            http_client: http_client,
+        }
+    }
+
+    // launch fire and forget tasks for trackers, with channels sent in for communication between tasks
+    async fn spawn_trackers(&mut self, sender: mpsc::Sender<SessionEvent>) {
+        for url in get_tracker_urls(
+            &self.torrent.announce,
+            self.torrent.announce_list.as_deref(),
+        ) {
+            let (tx, rx) = tokio::sync::mpsc::channel::<TrackerCommand>(32);
+
+            let tracker = Tracker::new(
+                url.clone(),
+                self.http_client.clone(),
+                self.torrent.info_hash.clone(),
+                sender.clone(),
+            );
+            self.trackers.push(tx);
+            tokio::spawn(tracker.run(rx));
+        }
+    }
+
+    async fn handle_command(&mut self, cmd: ClientCommand) {}
+
+    pub async fn run(
+        mut self,
+        mut rx: tokio::sync::mpsc::Receiver<ClientCommand>,
+    ) -> tokio::io::Result<()> {
+        // channels
+        let (tracker_resp_sender, mut tracker_resp_receiver) = mpsc::channel(32);
+        let (scheduler_event_sender, scheduler_event_receiver) =
+            mpsc::channel::<SchedulerEvent>(32);
+
+        // spawn the scheduler
+        let piece_hashes: Vec<[u8; 20]> = self
+            .torrent
+            .info
+            .pieces
+            .chunks_exact(20)
+            .map(|chunk| chunk.try_into().unwrap())
+            .collect();
+        let total_pieces = piece_hashes.len();
+        let scheduler = Scheduler::new(piece_hashes, total_pieces);
+        tokio::spawn(scheduler.run(scheduler_event_receiver));
+
+        self.spawn_trackers(tracker_resp_sender.clone()).await;
+
+        loop {
+            tokio::select! {
+                Some(cmd) = tracker_resp_receiver.recv() => {
+                    match cmd {
+                        SessionEvent::AnnounceSuccess { peers, warning } => {
+                            if let Some(warning) = warning {
+                                println!("Warning: {warning}");
+                            }
+                            scheduler_event_sender.send(SchedulerEvent::LaunchPeers { peers: peers }).await;
+                        },
+
+                        SessionEvent::AnnounceFailure { error } => {
+                            println!("Error: {error}");
+                        }
+                    }
+                }
+                // receive client commands later
+            }
+        }
+    }
+}
+
+// get tracker URLs from the TorrentResponse struct and deduplicate them using a HashSet, and return it.
+fn get_tracker_urls(announce: &str, list: Option<&[Vec<String>]>) -> HashSet<String> {
+    let mut set: HashSet<String> = HashSet::new();
+    if !announce.starts_with("udp") {
+        set.insert(announce.to_string());
+    }
+
+    if let Some(list) = list {
+        for tier in list {
+            for url in tier {
+                if !url.starts_with("udp") {
+                    set.insert(url.to_string());
+                }
+            }
+        }
+    }
+
+    set
+}
