@@ -9,7 +9,7 @@ use tokio::sync::mpsc::Sender;
 
 use crate::peers::{
     Peer,
-    commands::{PeerCommand, PeerResponse},
+    commands::{PeerCommand, PeerEvent},
 };
 
 type PeerID = u32;

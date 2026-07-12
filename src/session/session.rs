@@ -56,7 +56,7 @@ impl Session {
             .collect();
         let total_pieces = piece_hashes.len();
         let scheduler = Scheduler::new(piece_hashes, total_pieces);
-        tokio::spawn(scheduler.run(scheduler_event_receiver));
+        tokio::spawn(scheduler.run(scheduler_event_receiver, self.torrent.info_hash.clone()));
 
         self.spawn_trackers(tracker_resp_sender.clone()).await;
 
@@ -68,7 +68,7 @@ impl Session {
                             if let Some(warning) = warning {
                                 println!("Warning: {warning}");
                             }
-                            scheduler_event_sender.send(SchedulerEvent::LaunchPeers { peers: peers }).await;
+                            scheduler_event_sender.send(SchedulerEvent::LaunchPeers { peers }).await;
                         },
 
                         SessionEvent::AnnounceFailure { error } => {

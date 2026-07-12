@@ -4,7 +4,9 @@ use tokio::{
     sync::mpsc::{Receiver, Sender},
 };
 
-pub enum PeerResponse {
+pub enum PeerEvent {
+    Connect { stream: TcpStream, peer: Peer },
+
     // data from socket
     Data { data: Vec<u8> },
 
@@ -22,26 +24,46 @@ pub struct Peer {
     pub id: Option<[u8; 20]>,
 }
 
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MessageID {
+    Choke = 0,
+    Unchoke = 1,
+    Interested = 2,
+    NotInterested = 3,
+    Have = 4,
+    Bitfield = 5,
+    Request = 6,
+    Piece = 7,
+    Cancel = 8,
+    Port = 9,
+}
+
 pub enum PeerCommand {
     Shutdown,
     Resume,
 }
 
 pub struct PeerConnection {
-    socket: TcpStream,
+    pub socket: TcpStream,
 
-    pub addr: SocketAddr,
+    pub slot_id: usize,
     pub id: Option<[u8; 20]>,
+    pub info_hash: [u8; 20],
 
-    // bitfield:
-    peer_choked: bool,
-    am_choked: bool,
+    pub peer_choked: bool,
+    pub am_choked: bool,
 
-    peer_interested: bool,
-    am_interested: bool,
+    pub peer_interested: bool,
+    pub am_interested: bool,
 
-    in_flight: u32,
+    pub in_flight: u32,
 
-    scheduler_rx: Receiver<PeerCommand>,
-    // sender to scheduler later
+    // send stuff to the scheduler
+    pub peer_response_tx: Sender<PeerEvent>,
+
+    // send requests to the scheduler (maybe a oneshot later)
+
+    // buffers
+    pub message_buffer: Vec<u8>,
 }

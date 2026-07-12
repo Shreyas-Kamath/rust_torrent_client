@@ -37,7 +37,7 @@ pub async fn run(mut rx: mpsc::Receiver<ui::commands::UIToClientCommand>) -> Res
                     session_map.insert(id, session_tx);
                 }
                 Err(e) => {
-                    eprintln!("{e}");
+                    eprintln!("Some error: {e}");
                 }
             },
             _ => {

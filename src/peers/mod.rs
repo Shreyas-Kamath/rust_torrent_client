@@ -1,4 +1,4 @@
 pub mod commands;
 pub mod peers;
 
-pub use commands::{Peer, PeerConnection};
+pub use commands::{MessageID, Peer, PeerCommand, PeerConnection, PeerEvent};
