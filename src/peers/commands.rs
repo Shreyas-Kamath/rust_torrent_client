@@ -6,6 +6,7 @@ use tokio::{
 
 pub enum PeerEvent {
     Connect { stream: TcpStream, peer: Peer },
+    ConnectFailed { peer: Peer },
 
     // data from socket
     Data { data: Vec<u8> },

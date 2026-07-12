@@ -59,13 +59,22 @@ impl Scheduler {
                         let conn =
                             PeerConnection::new(stream, peer_tx.clone(), unique_id, peer.id, info_hash);
                         tokio::spawn(conn.run(rx));
-                    },
+                    }
+
+                    PeerEvent::ConnectFailed { peer } => {
+                        self.existing_peers.remove(&peer.addr);
+                    }
+
                     PeerEvent::Data { data } => { todo!(); }
+
                     PeerEvent::Disconnect { id } => {
                         self.remove_peer(id);
                     }
+
                     PeerEvent::RequestingBlocks { num } => { todo!(); }
+
                     PeerEvent::Bitfield => { todo!(); }
+
                     PeerEvent::Have { piece } => { todo!(); }
                 }
             }
@@ -80,6 +89,7 @@ impl Scheduler {
                 continue;
             }
 
+            self.existing_peers.insert(peer.addr);
             let peer_tx_cloned = peer_tx.clone();
 
             tokio::spawn(async move {
@@ -91,7 +101,10 @@ impl Scheduler {
                             .ok();
                     }
                     Err(_) => {
-                        return;
+                        peer_tx_cloned
+                            .send(PeerEvent::ConnectFailed { peer })
+                            .await
+                            .ok();
                     }
                 }
             });
