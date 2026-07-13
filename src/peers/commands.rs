@@ -1,22 +1,25 @@
+use bitvec::vec::BitVec;
 use std::net::SocketAddr;
 use tokio::{
     net::TcpStream,
     sync::mpsc::{Receiver, Sender},
 };
 
+use crate::scheduler::BlockRequest;
+
 pub enum PeerEvent {
     Connect { stream: TcpStream, peer: Peer },
     ConnectFailed { peer: Peer },
 
     // data from socket
-    Data { data: Vec<u8> },
+    Data { slot_id: usize, data: Vec<u8> },
 
-    Disconnect { id: usize },
+    Disconnect { slot_id: usize },
 
-    RequestingBlocks { num: u32 },
+    RequestingBlocks { slot_id: usize, num: u32 },
 
-    Bitfield,
-    Have { piece: u32 },
+    Bitfield { slot_id: usize, bitfield: BitVec },
+    Have { slot_id: usize, piece: u32 },
 }
 
 #[derive(Debug)]
@@ -43,6 +46,7 @@ pub enum MessageID {
 pub enum PeerCommand {
     Shutdown,
     Resume,
+    BlocksToDownload { blocks: Option<Vec<BlockRequest>> },
 }
 
 pub struct PeerConnection {
@@ -51,6 +55,7 @@ pub struct PeerConnection {
     pub slot_id: usize,
     pub id: Option<[u8; 20]>,
     pub info_hash: [u8; 20],
+    pub num_pieces: usize,
 
     pub peer_choked: bool,
     pub am_choked: bool,

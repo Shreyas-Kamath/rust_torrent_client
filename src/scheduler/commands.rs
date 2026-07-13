@@ -22,16 +22,23 @@ pub enum SchedulerEvent {
 }
 
 pub struct PieceBuffer {
-    data: Vec<u8>,
-    block_status: Vec<BlockState>,
-    blocks_received: u32,
-    complete: bool,
+    pub data: Vec<u8>,
+    pub block_status: Vec<BlockState>,
+    pub blocks_received: u32,
+    pub complete: bool,
 }
 
-enum BlockState {
+#[derive(PartialEq, Eq)]
+pub enum BlockState {
     NotRequested,
-    Requested,
+    Requested, // track with slot id later
     Received,
+}
+
+pub struct BlockRequest {
+    pub piece_index: u32,
+    pub offset: u32,
+    pub len: u32,
 }
 
 pub struct Scheduler {
@@ -40,6 +47,8 @@ pub struct Scheduler {
     pub num_pieces: usize,
     pub pieces: Vec<PieceBuffer>,
     pub piece_hashes: Vec<[u8; 20]>,
+    pub total_len: u64,
+    pub piece_len: u64,
 }
 
 pub struct PeerHandle {

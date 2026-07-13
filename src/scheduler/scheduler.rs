@@ -11,18 +11,30 @@ use crate::{
     peers::{
         Peer, PeerConnection,
         commands::{PeerCommand, PeerEvent},
-    },
-    scheduler::{PeerHandle, Scheduler, SchedulerEvent},
+    }, scheduler::{BlockRequest, BlockState, PeerHandle, PieceBuffer, Scheduler, SchedulerEvent},
 };
 
+impl PieceBuffer {
+    fn lazy_init(&mut self, piece_len: u64) {
+        if self.block_status.is_empty() {
+            self.complete = false;
+            self.data.resize(piece_len as usize, 0u8);
+            let num_blocks = ((piece_len + 16383) / 16384) as usize;
+            self.block_status.resize_with(num_blocks, || BlockState::NotRequested);
+        }
+    }
+}
+
 impl Scheduler {
-    pub fn new(piece_hashes: Vec<[u8; 20]>, total_pieces: usize) -> Self {
+    pub fn new(piece_hashes: Vec<[u8; 20]>, total_pieces: usize, total_len: u64, piece_len: u64) -> Self {
         Self {
             existing_peers: HashSet::new(),
             slots: Slab::with_capacity(1000),
             num_pieces: total_pieces,
             pieces: Vec::with_capacity(total_pieces),
             piece_hashes,
+            total_len,
+            piece_len,
         }
     }
 
@@ -33,54 +45,61 @@ impl Scheduler {
     ) -> tokio::io::Result<()> {
         let (peer_tx, mut peer_rx) = mpsc::channel::<PeerEvent>(1000);
 
-        tokio::select! {
-            Some(cmd) = rx.recv() => {
-                match cmd {
-                    SchedulerEvent::LaunchPeers { peers } => {
-                        self.dedup_and_start_peers(peers, peer_tx.clone()).await;
+        loop {
+            tokio::select! {
+                Some(cmd) = rx.recv() => {
+                    match cmd {
+                        SchedulerEvent::LaunchPeers { peers } => {
+                            self.dedup_and_start_peers(peers, peer_tx.clone()).await;
+                        }
+
+                        // fetch stats
+                        SchedulerEvent::FetchInfo => { todo!(); }
+
+                        // kill all peers and remove (prepare for disconnect flood)
+                        SchedulerEvent::ShutdownPeers => { todo!(); }
                     }
-
-                    // fetch stats
-                    SchedulerEvent::FetchInfo => { todo!(); }
-
-                    // kill all peers and remove (prepare for disconnect flood)
-                    SchedulerEvent::ShutdownPeers => { todo!(); }
                 }
-            }
 
-            Some(cmd) = peer_rx.recv() => {
-                match cmd {
-                    PeerEvent::Connect { stream, peer } => {
-                        self.existing_peers.insert(peer.addr);
+                Some(cmd) = peer_rx.recv() => {
+                    match cmd {
+                        PeerEvent::Connect { stream, peer } => {
+                            self.existing_peers.insert(peer.addr);
 
-                        let (tx, rx) = mpsc::channel::<PeerCommand>(5);
-                        let peer_handle = PeerHandle::new(tx, self.num_pieces, peer.addr);
-                        let unique_id = self.slots.insert(peer_handle);
-                        let conn =
-                            PeerConnection::new(stream, peer_tx.clone(), unique_id, peer.id, info_hash);
-                        tokio::spawn(conn.run(rx));
+                            let (tx, rx) = mpsc::channel::<PeerCommand>(5);
+                            let peer_handle = PeerHandle::new(tx, peer.addr);
+                            let unique_id = self.slots.insert(peer_handle);
+                            let conn =
+                                PeerConnection::new(stream, peer_tx.clone(), unique_id, peer.id, info_hash, self.num_pieces);
+                            tokio::spawn(conn.run(rx));
+                        }
+
+                        PeerEvent::ConnectFailed { peer } => {
+                            self.existing_peers.remove(&peer.addr);
+                        }
+
+                        PeerEvent::Data { slot_id, data } => { todo!(); }
+
+                        PeerEvent::Disconnect { slot_id } => {
+                            self.remove_peer(slot_id);
+                        }
+
+                        PeerEvent::RequestingBlocks { slot_id, num } => {
+                            let blocks = self.fetch_blocks_for_peer(slot_id, num);
+                        }
+
+                        PeerEvent::Bitfield { slot_id, bitfield } => {
+                            self.slots.get_mut(slot_id).unwrap().bitfield = bitfield;
+                        }
+
+                        PeerEvent::Have { slot_id, piece } => {
+                            println!("Peer {} has a piece: {}", slot_id, piece);
+                            self.slots.get_mut(slot_id).unwrap().bitfield.set(piece as usize, true);
+                        }
                     }
-
-                    PeerEvent::ConnectFailed { peer } => {
-                        self.existing_peers.remove(&peer.addr);
-                    }
-
-                    PeerEvent::Data { data } => { todo!(); }
-
-                    PeerEvent::Disconnect { id } => {
-                        self.remove_peer(id);
-                    }
-
-                    PeerEvent::RequestingBlocks { num } => { todo!(); }
-
-                    PeerEvent::Bitfield => { todo!(); }
-
-                    PeerEvent::Have { piece } => { todo!(); }
                 }
             }
         }
-
-        Ok(())
     }
 
     async fn dedup_and_start_peers(&mut self, list: Vec<Peer>, peer_tx: Sender<PeerEvent>) {
@@ -119,12 +138,55 @@ impl Scheduler {
 
         self.existing_peers.remove(&removed.addr);
     }
+
+    // very naive
+    fn fetch_blocks_for_peer(&mut self, slot_id: usize, mut num: u32) -> Option<Vec<BlockRequest>> {
+        let mut blocks: Vec<BlockRequest> = Vec::with_capacity(num as usize);
+
+        let peer_bitfield = &self.slots.get(slot_id).unwrap().bitfield;
+        
+        for index in 0..self.pieces.len() {
+            if num == 0 {
+                break;
+            }
+
+            let len = self.piece_len_for_index(index);
+            let piece_buff = &mut self.pieces[index];
+            
+            if piece_buff.complete { continue; }
+
+            if *peer_bitfield.get(index).unwrap() {
+                piece_buff.lazy_init(len);
+            }
+
+            for index2 in 0..piece_buff.block_status.len() {
+                if piece_buff.block_status[index2] == BlockState::NotRequested {
+                    piece_buff.block_status[index2] = BlockState::Requested;
+                    blocks.push(BlockRequest { piece_index: index as u32, offset: index2 as u32 * 16384, len: 16384.min(len as u32 - (index2) as u32 * 16384) });
+                    num -= 1;
+                }
+            }
+        }
+
+        if blocks.is_empty() { return None; }
+        return Some(blocks);
+    }
+
+    fn piece_len_for_index(&self, index: usize) -> u64 {
+        if index < self.num_pieces - 1 {
+            return self.piece_len;
+        }
+        else {
+            return self.total_len - self.piece_len * (self.num_pieces as u64 - 1);
+        }
+    }
 }
 
 impl PeerHandle {
-    pub fn new(tx: Sender<PeerCommand>, total_pieces: usize, peer_addr: SocketAddr) -> Self {
+    pub fn new(tx: Sender<PeerCommand>, peer_addr: SocketAddr) -> Self {
         Self {
-            bitfield: BitVec::with_capacity(total_pieces),
+            // see whats up with this? do we need to preallocate this?
+            bitfield: BitVec::new(),
             sender: tx,
             addr: peer_addr,
         }

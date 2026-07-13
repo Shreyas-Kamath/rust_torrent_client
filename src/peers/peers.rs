@@ -1,13 +1,18 @@
+use bitvec::vec::BitVec;
 use tokio::{
     io::{self, AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
     sync::mpsc::{Receiver, Sender},
 };
 
-use crate::peers::{MessageID, PeerCommand, PeerConnection, PeerEvent};
+use crate::{
+    peers::{MessageID, PeerCommand, PeerConnection, PeerEvent},
+    scheduler::BlockRequest,
+};
 
 const P_STR_PROTOCOL: &[u8] = b"BitTorrent protocol";
 const PEER_ID: &[u8] = b"-TR2940-1234567890ab";
+const MAX_IN_FLIGHT: u32 = 20;
 
 impl TryFrom<u8> for MessageID {
     type Error = io::Error;
@@ -36,6 +41,7 @@ impl PeerConnection {
         slot_id: usize,
         id: Option<[u8; 20]>,
         info_hash: [u8; 20],
+        num_pieces: usize,
     ) -> Self {
         Self {
             socket: stream,
@@ -45,14 +51,15 @@ impl PeerConnection {
             id,
             peer_choked: true,
             am_choked: true,
-            peer_interested: true,
+            peer_interested: false,
             am_interested: false,
             in_flight: 0,
             message_buffer: Vec::new(),
+            num_pieces,
         }
     }
 
-    async fn do_handshake(&mut self) -> io::Result<()> {
+    async fn do_handshake(&mut self) -> tokio::io::Result<()> {
         let mut handshake_buf = [0u8; 68];
         handshake_buf[0] = 19;
         handshake_buf[1..1 + P_STR_PROTOCOL.len()].copy_from_slice(P_STR_PROTOCOL);
@@ -69,7 +76,7 @@ impl PeerConnection {
         Ok(())
     }
 
-    fn validate_handshake(&self, peer_handshake: &[u8; 68]) -> io::Result<()> {
+    fn validate_handshake(&self, peer_handshake: &[u8; 68]) -> tokio::io::Result<()> {
         if peer_handshake[0] != 19 {
             return Err(io::Error::other("Bad pstrlen"));
         }
@@ -85,11 +92,34 @@ impl PeerConnection {
         Ok(())
     }
 
+    fn parse_bitfield(&self) -> tokio::io::Result<BitVec> {
+        let expected = self.num_pieces.div_ceil(8);
+
+        if self.message_buffer.len() != expected {
+            return Err(io::Error::other("Invalid bitfield length"));
+        }
+        let mut bitfield = BitVec::with_capacity(self.num_pieces);
+
+        for &byte in &self.message_buffer {
+            for i in (0..8).rev() {
+                if bitfield.len() == self.num_pieces {
+                    break;
+                }
+
+                bitfield.push((byte >> i) & 1 != 0);
+            }
+        }
+
+        Ok(bitfield)
+    }
+
     pub async fn run(mut self, mut scheduler_rx: Receiver<PeerCommand>) {
         let res = self.run_inner(scheduler_rx).await;
 
         self.peer_response_tx
-            .send(PeerEvent::Disconnect { id: self.slot_id })
+            .send(PeerEvent::Disconnect {
+                slot_id: self.slot_id,
+            })
             .await
             .ok();
 
@@ -98,7 +128,60 @@ impl PeerConnection {
         }
     }
 
-    async fn read_message(&mut self) -> io::Result<()> {
+    async fn send_interested(&mut self) -> tokio::io::Result<()> {
+        let mut interested_buffer = [0u8; 5];
+        interested_buffer[..4].copy_from_slice(&1u32.to_be_bytes());
+        interested_buffer[4] = MessageID::Interested as u8;
+
+        self.socket.write_all(&interested_buffer).await?;
+
+        self.am_interested = true;
+        Ok(())
+    }
+
+    async fn request_blocks(&mut self) {
+        self.peer_response_tx
+            .send(PeerEvent::RequestingBlocks {
+                slot_id: self.slot_id,
+                num: MAX_IN_FLIGHT - self.in_flight,
+            })
+            .await
+            .ok();
+    }
+
+    async fn maybe_request_blocks(&mut self) {
+        if self.am_interested && !self.am_choked && self.in_flight <= MAX_IN_FLIGHT / 2 {
+            self.request_blocks().await;
+        }
+    }
+
+    async fn download(&mut self, blocks: Vec<BlockRequest>) -> tokio::io::Result<()> {
+        let mut counter = 0;
+        let mut blocks_buf: Vec<u8> = Vec::new();
+        blocks_buf.resize(17 * blocks.len(), 0u8);
+
+        for BlockRequest {
+            piece_index,
+            offset,
+            len,
+        } in &blocks
+        {
+            blocks_buf[counter..counter + 4].copy_from_slice(&13u32.to_be_bytes());
+            blocks_buf[counter + 4] = MessageID::Request as u8;
+            blocks_buf[counter + 5..counter + 9].copy_from_slice(&piece_index.to_be_bytes());
+            blocks_buf[counter + 9..counter + 13].copy_from_slice(&offset.to_be_bytes());
+            blocks_buf[counter + 13..counter + 17].copy_from_slice(&len.to_be_bytes());
+
+            counter += 17;
+        }
+
+        self.socket.write_all(&blocks_buf).await?;
+        self.in_flight += blocks.len() as u32;
+
+        Ok(())
+    }
+
+    async fn read_message(&mut self) -> tokio::io::Result<()> {
         let len = self.socket.read_u32().await?;
         // add keep alive timer later
         if len == 0 {
@@ -117,6 +200,8 @@ impl PeerConnection {
             }
             Ok(MessageID::Unchoke) => {
                 self.am_choked = false;
+                println!("Peer {} unchoked us!", self.slot_id);
+                self.maybe_request_blocks().await;
             }
             Ok(MessageID::Interested) => {
                 self.peer_interested = true;
@@ -127,11 +212,33 @@ impl PeerConnection {
 
             Ok(MessageID::Have) => {
                 let piece = u32::from_be_bytes(self.message_buffer[0..4].try_into().unwrap());
-                self.peer_response_tx.send(PeerEvent::Have { piece }).await;
+                self.peer_response_tx
+                    .send(PeerEvent::Have {
+                        slot_id: self.slot_id,
+                        piece,
+                    })
+                    .await
+                    .ok();
+                if !self.am_interested {
+                    self.send_interested().await?;
+                    self.maybe_request_blocks().await;
+                }
             }
 
             Ok(MessageID::Bitfield) => {
-                todo!("Parse this shit later");
+                // we usually wait and the scan the bitfield if we need a piece
+                // but for testing send interested anyway
+                let bitfield = self.parse_bitfield()?;
+                self.peer_response_tx
+                    .send(PeerEvent::Bitfield {
+                        slot_id: self.slot_id,
+                        bitfield,
+                    })
+                    .await
+                    .ok();
+                if !self.am_interested {
+                    self.send_interested().await?;
+                }
             }
 
             Ok(MessageID::Request) => {
@@ -158,9 +265,11 @@ impl PeerConnection {
         Ok(())
     }
 
-    async fn run_inner(&mut self, mut scheduler_rx: Receiver<PeerCommand>) -> io::Result<()> {
+    async fn run_inner(
+        &mut self,
+        mut scheduler_rx: Receiver<PeerCommand>,
+    ) -> tokio::io::Result<()> {
         self.do_handshake().await?;
-        println!("Good handshake!");
         // self.send_bitfield().await?;
 
         loop {
@@ -176,6 +285,9 @@ impl PeerConnection {
                         }
                         PeerCommand::Resume => {
                             todo!();
+                        }
+                        PeerCommand::BlocksToDownload { blocks } => {
+                            if let Some(blocks) = blocks { self.download(blocks).await?; }
                         }
                     }
                 }
