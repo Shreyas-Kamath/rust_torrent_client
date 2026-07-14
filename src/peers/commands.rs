@@ -8,18 +8,38 @@ use tokio::{
 use crate::scheduler::BlockRequest;
 
 pub enum PeerEvent {
-    Connect { stream: TcpStream, peer: Peer },
-    ConnectFailed { peer: Peer },
+    Connect {
+        stream: TcpStream,
+        peer: Peer,
+    },
+    ConnectFailed {
+        peer: Peer,
+    },
 
     // data from socket
-    Data { slot_id: usize, data: Vec<u8> },
+    Data {
+        piece: u32,
+        begin: u32,
+        data: Vec<u8>,
+    },
 
-    Disconnect { slot_id: usize },
+    Disconnect {
+        slot_id: usize,
+    },
 
-    RequestingBlocks { slot_id: usize, num: u32 },
+    RequestingBlocks {
+        slot_id: usize,
+        num: u32,
+    },
 
-    Bitfield { slot_id: usize, bitfield: BitVec },
-    Have { slot_id: usize, piece: u32 },
+    Bitfield {
+        slot_id: usize,
+        bitfield: BitVec,
+    },
+    Have {
+        slot_id: usize,
+        piece: u32,
+    },
 }
 
 #[derive(Debug)]

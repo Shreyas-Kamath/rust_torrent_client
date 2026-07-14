@@ -140,7 +140,11 @@ impl PeerConnection {
     }
 
     async fn request_blocks(&mut self) {
-        println!("{} is about to request {} blocks from the scheduler", self.slot_id, MAX_IN_FLIGHT - self.in_flight);
+        println!(
+            "{} is about to request {} blocks from the scheduler",
+            self.slot_id,
+            MAX_IN_FLIGHT - self.in_flight
+        );
         self.peer_response_tx
             .send(PeerEvent::RequestingBlocks {
                 slot_id: self.slot_id,
@@ -198,7 +202,9 @@ impl PeerConnection {
         match message_id {
             // flags
             Ok(MessageID::Choke) => {
-                self.am_choked = true;
+                if !self.am_choked {
+                    self.am_choked = true;
+                }
             }
             Ok(MessageID::Unchoke) => {
                 if self.am_choked {
@@ -249,7 +255,18 @@ impl PeerConnection {
             }
 
             Ok(MessageID::Piece) => {
-                todo!("Peer sent a block");
+                self.in_flight -= 1;
+
+                if self.message_buffer.len() >= 8 {
+                    let piece = u32::from_be_bytes(self.message_buffer[0..4].try_into().unwrap());
+                    let begin = u32::from_be_bytes(self.message_buffer[4..8].try_into().unwrap());
+                    let data = std::mem::take(&mut self.message_buffer);
+
+                    self.peer_response_tx
+                        .send(PeerEvent::Data { piece, begin, data })
+                        .await
+                        .ok();
+                }
             }
 
             Ok(MessageID::Cancel) => {

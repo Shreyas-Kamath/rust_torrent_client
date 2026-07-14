@@ -19,7 +19,12 @@ const BLOCK_SIZE: u32 = 16384;
 
 impl Default for PieceBuffer {
     fn default() -> Self {
-        Self { data: Vec::new(), block_status: Vec::new(), blocks_received: 0, complete: false }
+        Self {
+            data: Vec::new(),
+            block_status: Vec::new(),
+            blocks_received: 0,
+            complete: false,
+        }
     }
 }
 
@@ -93,7 +98,9 @@ impl Scheduler {
                             self.existing_peers.remove(&peer.addr);
                         }
 
-                        PeerEvent::Data { slot_id, data } => { todo!(); }
+                        PeerEvent::Data { piece, begin, data } => {
+                            self.handle_data(piece, begin, data).await;
+                        }
 
                         PeerEvent::Disconnect { slot_id } => {
                             self.remove_peer(slot_id);
@@ -206,6 +213,30 @@ impl Scheduler {
             return self.piece_len;
         } else {
             return self.total_len - self.piece_len * (self.num_pieces as u64 - 1);
+        }
+    }
+
+    async fn handle_data(&mut self, piece: u32, begin: u32, data: Vec<u8>) {
+        let begin = begin as usize;
+        let block = begin / BLOCK_SIZE as usize;
+
+        let piece_buffer = &mut self.pieces[piece as usize];
+        let block_status = &mut piece_buffer.block_status;
+
+        if piece_buffer.complete {
+            return;
+        }
+        if block_status[block] == BlockState::Received {
+            return;
+        }
+
+        block_status[block] = BlockState::Received;
+        piece_buffer.blocks_received += 1;
+
+        piece_buffer.data[begin..begin + data.len() - 8].copy_from_slice(&data[8..]);
+
+        if piece_buffer.blocks_received as usize == block_status.len() {
+            println!("piece {piece} is complete!");
         }
     }
 }
