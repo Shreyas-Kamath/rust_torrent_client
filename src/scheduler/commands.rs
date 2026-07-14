@@ -21,6 +21,7 @@ pub enum SchedulerEvent {
     FetchInfo,
 }
 
+#[derive(Clone)]
 pub struct PieceBuffer {
     pub data: Vec<u8>,
     pub block_status: Vec<BlockState>,
@@ -28,7 +29,7 @@ pub struct PieceBuffer {
     pub complete: bool,
 }
 
-#[derive(PartialEq, Eq)]
+#[derive(PartialEq, Eq, Clone)]
 pub enum BlockState {
     NotRequested,
     Requested, // track with slot id later

@@ -123,8 +123,8 @@ impl PeerConnection {
             .await
             .ok();
 
-        if let Err(e) = res {
-            eprintln!("Peer {} exiting: {}", self.slot_id, e);
+        if let Err(_) = res {
+            // eprintln!("Peer {} exiting: {}", self.slot_id, e);
         }
     }
 
@@ -140,6 +140,7 @@ impl PeerConnection {
     }
 
     async fn request_blocks(&mut self) {
+        println!("{} is about to request {} blocks from the scheduler", self.slot_id, MAX_IN_FLIGHT - self.in_flight);
         self.peer_response_tx
             .send(PeerEvent::RequestingBlocks {
                 slot_id: self.slot_id,
@@ -178,6 +179,7 @@ impl PeerConnection {
         self.socket.write_all(&blocks_buf).await?;
         self.in_flight += blocks.len() as u32;
 
+        println!("Sent requests to {}", self.slot_id);
         Ok(())
     }
 
@@ -199,9 +201,10 @@ impl PeerConnection {
                 self.am_choked = true;
             }
             Ok(MessageID::Unchoke) => {
-                self.am_choked = false;
-                println!("Peer {} unchoked us!", self.slot_id);
-                self.maybe_request_blocks().await;
+                if self.am_choked {
+                    self.am_choked = false;
+                    self.maybe_request_blocks().await;
+                }
             }
             Ok(MessageID::Interested) => {
                 self.peer_interested = true;
@@ -287,7 +290,12 @@ impl PeerConnection {
                             todo!();
                         }
                         PeerCommand::BlocksToDownload { blocks } => {
-                            if let Some(blocks) = blocks { self.download(blocks).await?; }
+                            if let Some(blocks) = blocks {
+                                self.download(blocks).await?;
+                            }
+                            else {
+                                println!("{} requested but got None", self.slot_id);
+                            }
                         }
                     }
                 }

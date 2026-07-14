@@ -11,27 +11,42 @@ use crate::{
     peers::{
         Peer, PeerConnection,
         commands::{PeerCommand, PeerEvent},
-    }, scheduler::{BlockRequest, BlockState, PeerHandle, PieceBuffer, Scheduler, SchedulerEvent},
+    },
+    scheduler::{BlockRequest, BlockState, PeerHandle, PieceBuffer, Scheduler, SchedulerEvent},
 };
+
+const BLOCK_SIZE: u32 = 16384;
+
+impl Default for PieceBuffer {
+    fn default() -> Self {
+        Self { data: Vec::new(), block_status: Vec::new(), blocks_received: 0, complete: false }
+    }
+}
 
 impl PieceBuffer {
     fn lazy_init(&mut self, piece_len: u64) {
         if self.block_status.is_empty() {
             self.complete = false;
             self.data.resize(piece_len as usize, 0u8);
-            let num_blocks = ((piece_len + 16383) / 16384) as usize;
-            self.block_status.resize_with(num_blocks, || BlockState::NotRequested);
+            let num_blocks = ((piece_len + (BLOCK_SIZE - 1) as u64) / BLOCK_SIZE as u64) as usize;
+            self.block_status
+                .resize_with(num_blocks, || BlockState::NotRequested);
         }
     }
 }
 
 impl Scheduler {
-    pub fn new(piece_hashes: Vec<[u8; 20]>, total_pieces: usize, total_len: u64, piece_len: u64) -> Self {
+    pub fn new(
+        piece_hashes: Vec<[u8; 20]>,
+        total_pieces: usize,
+        total_len: u64,
+        piece_len: u64,
+    ) -> Self {
         Self {
             existing_peers: HashSet::new(),
             slots: Slab::with_capacity(1000),
             num_pieces: total_pieces,
-            pieces: Vec::with_capacity(total_pieces),
+            pieces: vec![PieceBuffer::default(); total_pieces],
             piece_hashes,
             total_len,
             piece_len,
@@ -86,6 +101,7 @@ impl Scheduler {
 
                         PeerEvent::RequestingBlocks { slot_id, num } => {
                             let blocks = self.fetch_blocks_for_peer(slot_id, num);
+                            self.slots.get(slot_id).unwrap().sender.send(PeerCommand::BlocksToDownload { blocks }).await.ok();
                         }
 
                         PeerEvent::Bitfield { slot_id, bitfield } => {
@@ -93,7 +109,6 @@ impl Scheduler {
                         }
 
                         PeerEvent::Have { slot_id, piece } => {
-                            println!("Peer {} has a piece: {}", slot_id, piece);
                             self.slots.get_mut(slot_id).unwrap().bitfield.set(piece as usize, true);
                         }
                     }
@@ -144,39 +159,52 @@ impl Scheduler {
         let mut blocks: Vec<BlockRequest> = Vec::with_capacity(num as usize);
 
         let peer_bitfield = &self.slots.get(slot_id).unwrap().bitfield;
-        
-        for index in 0..self.pieces.len() {
+
+        for piece_index in 0..self.pieces.len() {
             if num == 0 {
                 break;
             }
 
-            let len = self.piece_len_for_index(index);
-            let piece_buff = &mut self.pieces[index];
-            
-            if piece_buff.complete { continue; }
+            let len = self.piece_len_for_index(piece_index);
+            let piece_buff = &mut self.pieces[piece_index];
 
-            if *peer_bitfield.get(index).unwrap() {
+            if piece_buff.complete {
+                continue;
+            }
+
+            if *peer_bitfield.get(piece_index).unwrap() {
                 piece_buff.lazy_init(len);
             }
 
-            for index2 in 0..piece_buff.block_status.len() {
-                if piece_buff.block_status[index2] == BlockState::NotRequested {
-                    piece_buff.block_status[index2] = BlockState::Requested;
-                    blocks.push(BlockRequest { piece_index: index as u32, offset: index2 as u32 * 16384, len: 16384.min(len as u32 - (index2) as u32 * 16384) });
+            for block_index in 0..piece_buff.block_status.len() {
+                if num == 0 {
+                    break;
+                }
+
+                if piece_buff.block_status[block_index] == BlockState::NotRequested {
+                    piece_buff.block_status[block_index] = BlockState::Requested;
+                    blocks.push(BlockRequest {
+                        piece_index: piece_index as u32,
+                        offset: block_index as u32 * BLOCK_SIZE,
+                        len: BLOCK_SIZE.min(len as u32 - (block_index) as u32 * BLOCK_SIZE),
+                    });
+                    println!("Handed block {block_index} to {slot_id}");
                     num -= 1;
                 }
             }
         }
 
-        if blocks.is_empty() { return None; }
-        return Some(blocks);
+        if blocks.is_empty() {
+            None
+        } else {
+            Some(blocks)
+        }
     }
 
     fn piece_len_for_index(&self, index: usize) -> u64 {
         if index < self.num_pieces - 1 {
             return self.piece_len;
-        }
-        else {
+        } else {
             return self.total_len - self.piece_len * (self.num_pieces as u64 - 1);
         }
     }
