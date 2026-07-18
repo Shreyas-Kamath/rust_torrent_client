@@ -1,4 +1,5 @@
 use crate::client::ClientCommand;
+use crate::disk::DiskEvent;
 use crate::parser::Torrent;
 use crate::scheduler::{Scheduler, SchedulerEvent};
 use crate::session::{Session, SessionEvent};
@@ -12,7 +13,7 @@ impl Session {
         Self {
             torrent,
             trackers: Vec::new(),
-            http_client: http_client,
+            http_client,
         }
     }
 
@@ -45,6 +46,7 @@ impl Session {
         let (tracker_resp_sender, mut tracker_resp_receiver) = mpsc::channel(32);
         let (scheduler_event_sender, scheduler_event_receiver) =
             mpsc::channel::<SchedulerEvent>(32);
+        let (disk_tx, disk_rx) = mpsc::channel::<DiskEvent>(1000);
 
         // spawn the scheduler
         let piece_hashes: Vec<[u8; 20]> = self
@@ -56,12 +58,21 @@ impl Session {
             .collect();
         let total_pieces = piece_hashes.len();
         let scheduler = Scheduler::new(
-            piece_hashes,
             total_pieces,
             self.torrent.total_length,
             self.torrent.info.piece_length,
+            disk_tx,
         );
-        tokio::spawn(scheduler.run(scheduler_event_receiver, self.torrent.info_hash));
+
+        let file_list = std::mem::take(&mut self.torrent.info.files);
+        tokio::spawn(scheduler.run(
+            self.torrent.info.name.clone(),
+            scheduler_event_receiver,
+            self.torrent.info_hash,
+            piece_hashes,
+            file_list,
+            disk_rx,
+        ));
 
         self.spawn_trackers(tracker_resp_sender.clone()).await;
 

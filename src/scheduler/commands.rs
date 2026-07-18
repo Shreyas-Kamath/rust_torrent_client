@@ -7,12 +7,13 @@ use bitvec::vec::BitVec;
 use slab::Slab;
 use tokio::sync::mpsc::Sender;
 
-use crate::peers::{
-    Peer,
-    commands::{PeerCommand, PeerEvent},
+use crate::{
+    disk::DiskEvent,
+    peers::{
+        Peer,
+        commands::{PeerCommand, PeerEvent},
+    },
 };
-
-type PeerID = u32;
 
 pub enum SchedulerEvent {
     LaunchPeers { peers: Vec<Peer> },
@@ -21,7 +22,7 @@ pub enum SchedulerEvent {
     FetchInfo,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct PieceBuffer {
     pub data: Vec<u8>,
     pub block_status: Vec<BlockState>,
@@ -47,13 +48,21 @@ pub struct Scheduler {
     pub slots: Slab<PeerHandle>,
     pub num_pieces: usize,
     pub pieces: Vec<PieceBuffer>,
-    pub piece_hashes: Vec<[u8; 20]>,
     pub total_len: u64,
     pub piece_len: u64,
+    pub disk_event_sender: Sender<DiskEvent>,
 }
 
 pub struct PeerHandle {
     pub bitfield: BitVec,
     pub sender: Sender<PeerCommand>,
     pub addr: SocketAddr,
+
+    pub peer_choked: bool,
+    pub am_choked: bool,
+
+    pub peer_interested: bool,
+    pub am_interested: bool,
+
+    pub in_flight: u32,
 }

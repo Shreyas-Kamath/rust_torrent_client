@@ -1,6 +1,7 @@
 use iced;
 
 mod client;
+mod disk;
 mod parser;
 mod peers;
 mod scheduler;

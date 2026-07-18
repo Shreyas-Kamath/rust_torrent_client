@@ -5,4 +5,4 @@ pub use parser::parse_peers;
 pub use parser::parse_response;
 pub use parser::parse_torrent;
 
-pub use commands::Torrent;
+pub use commands::{File, Torrent};

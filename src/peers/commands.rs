@@ -1,8 +1,7 @@
 use bitvec::vec::BitVec;
 use std::net::SocketAddr;
 use tokio::{
-    net::TcpStream,
-    sync::mpsc::{Receiver, Sender},
+    net::{TcpStream, tcp::{OwnedReadHalf, OwnedWriteHalf}}, sync::mpsc::{Receiver, Sender},
 };
 
 use crate::scheduler::BlockRequest;
@@ -18,6 +17,7 @@ pub enum PeerEvent {
 
     // data from socket
     Data {
+        slot_id: usize,
         piece: u32,
         begin: u32,
         data: Vec<u8>,
@@ -27,19 +27,31 @@ pub enum PeerEvent {
         slot_id: usize,
     },
 
-    RequestingBlocks {
-        slot_id: usize,
-        num: u32,
-    },
-
     Bitfield {
         slot_id: usize,
         bitfield: BitVec,
     },
+
     Have {
         slot_id: usize,
         piece: u32,
     },
+
+    Choke {
+        slot_id: usize,
+    },
+
+    Unchoke {
+        slot_id: usize,
+    },
+
+    Interested {
+        slot_id: usize, 
+    },
+
+    NotInterested {
+        slot_id: usize,
+    }
 }
 
 #[derive(Debug)]
@@ -66,30 +78,24 @@ pub enum MessageID {
 pub enum PeerCommand {
     Shutdown,
     Resume,
-    BlocksToDownload { blocks: Option<Vec<BlockRequest>> },
+    SendInterested,
+    SendUnchoke,
+    SendChoke,
+    SendCancel,
+    SendPiece,
+    BlocksToDownload { blocks: Vec<BlockRequest> },
+    SendHave { piece: u32 },
 }
 
-pub struct PeerConnection {
-    pub socket: TcpStream,
-
+pub struct PeerReader {
     pub slot_id: usize,
-    pub id: Option<[u8; 20]>,
-    pub info_hash: [u8; 20],
-    pub num_pieces: usize,
-
-    pub peer_choked: bool,
-    pub am_choked: bool,
-
-    pub peer_interested: bool,
-    pub am_interested: bool,
-
-    pub in_flight: u32,
-
-    // send stuff to the scheduler
-    pub peer_response_tx: Sender<PeerEvent>,
-
-    // send requests to the scheduler (maybe a oneshot later)
-
-    // buffers
+    pub reader: OwnedReadHalf,
+    pub peer_event_tx: Sender<PeerEvent>,
     pub message_buffer: Vec<u8>,
+    pub num_pieces: usize,
+}
+
+pub struct PeerWriter {
+    pub writer: OwnedWriteHalf,
+    pub peer_command_rx: Receiver<PeerCommand>,
 }

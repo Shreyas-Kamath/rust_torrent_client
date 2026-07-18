@@ -9,7 +9,7 @@ use std::net::SocketAddr;
 use crate::peers::Peer;
 
 pub fn parse_torrent(raw: &[u8]) -> Result<Torrent, String> {
-    let mut result: Torrent = serde_bencode::from_bytes(&raw).map_err(|e| e.to_string())?;
+    let mut result: Torrent = serde_bencode::from_bytes(raw).map_err(|e| e.to_string())?;
     let total_length = if let Some(files) = &result.info.files {
         // multi-file torrent → sum all file lengths
         files.iter().map(|f| f.length).sum()
