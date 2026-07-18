@@ -1,0 +1,5 @@
+Interesting problems faced:
+
+1 - Socket stream out of sync because of tokio select macro behavior, which cancels the other futures if a future wins, leading to half reads/writes and garbage being left in the socket. This was fixed by splitting the socket stream into (OwnedReadHalf, OwnedWriteHalf) and running them concurrently as two different tasks. By eliminating the tokio select completely, and using a regular loop {...}, a logical race was prevented and cancellation-unsafe operations like read_exact, write_all ran to completion.
+
+Debugging this was quite difficult as logs and peer state flags showed everything was perfect, but the program would mysteriously stop or panic because message_buffer.resize was called on a u32 that ran out of bounds randomly. It would then allocate random amounts of RAM if it succeeded, from 2MB - 900MB which is how I found this bug. Further investigation revealed that socket reads would drop whenever a message was received by the task, but analysis by tracing inbound TCP traffic with Wireshark showed that all the data was received successfully by the socket, so it proved that it was indeed a logic error on my part.
