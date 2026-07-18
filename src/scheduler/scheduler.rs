@@ -8,9 +8,14 @@ use tokio::{
 };
 
 use crate::{
-    disk::{Disk, DiskEvent, DiskResponse}, parser::File, peers::{
-        Peer, commands::{PeerCommand, PeerEvent}, run_peer,
-    }, scheduler::{BlockRequest, BlockState, PeerHandle, PieceBuffer, Scheduler, SchedulerEvent},
+    disk::{Disk, DiskEvent, DiskResponse},
+    parser::File,
+    peers::{
+        Peer,
+        commands::{PeerCommand, PeerEvent},
+        run_peer,
+    },
+    scheduler::{BlockRequest, BlockState, PeerHandle, PieceBuffer, Scheduler, SchedulerEvent},
 };
 
 const BLOCK_SIZE: u32 = 16384;
@@ -73,7 +78,6 @@ impl Scheduler {
         file_list: Option<Vec<File>>,
         disk_event_receiver: Receiver<DiskEvent>,
     ) -> tokio::io::Result<()> {
-
         let (peer_tx, mut peer_rx) = mpsc::channel::<PeerEvent>(2000);
         let (disk_response_tx, mut disk_response_rx) = mpsc::channel::<DiskResponse>(1000);
 
@@ -212,7 +216,7 @@ impl Scheduler {
         peer_handle.bitfield.set(piece as usize, true);
 
         let am_interested = &peer_handle.am_interested;
-        
+
         if !am_interested {
             peer_handle.sender.send(PeerCommand::SendInterested).await;
         }
@@ -228,7 +232,7 @@ impl Scheduler {
         }
     }
 
-    async fn handle_unchoke(&mut self, slot_id: usize)  {
+    async fn handle_unchoke(&mut self, slot_id: usize) {
         let peer_handle = self.slots.get_mut(slot_id).expect("Peer doesnt exist");
 
         if peer_handle.am_choked {
@@ -258,7 +262,7 @@ impl Scheduler {
         peer_handle.bitfield = bitfield;
 
         let am_interested = &peer_handle.am_interested;
-        
+
         if !am_interested {
             peer_handle.sender.send(PeerCommand::SendInterested).await;
             peer_handle.am_interested = true;
@@ -270,15 +274,23 @@ impl Scheduler {
     async fn maybe_push_blocks(&mut self, slot_id: usize) {
         let (should_request, in_flight) = {
             let peer_handle = self.slots.get(slot_id).expect("Peer doesnt exist");
-            (peer_handle.am_interested && !peer_handle.am_choked, peer_handle.in_flight)
+            (
+                peer_handle.am_interested && !peer_handle.am_choked,
+                peer_handle.in_flight,
+            )
         };
-        if !should_request || in_flight > MAX_IN_FLIGHT / 2 { return; }
+        if !should_request || in_flight > MAX_IN_FLIGHT / 2 {
+            return;
+        }
 
         let blocks = self.push_blocks(slot_id, MAX_IN_FLIGHT - in_flight);
         if !blocks.is_empty() {
             let peer_handle = self.slots.get_mut(slot_id).expect("Peer doesnt exist");
             let len = blocks.len() as u32;
-            peer_handle.sender.send(PeerCommand::BlocksToDownload { blocks }).await;
+            peer_handle
+                .sender
+                .send(PeerCommand::BlocksToDownload { blocks })
+                .await;
             peer_handle.in_flight += len;
         }
     }
@@ -287,39 +299,39 @@ impl Scheduler {
         let peer_bitfield = &self.slots.get(slot_id).expect("Peer doesnt exist").bitfield;
         let mut blocks: Vec<BlockRequest> = Vec::with_capacity(request as usize);
 
-            for piece_index in 0..self.pieces.len() {
+        for piece_index in 0..self.pieces.len() {
+            if request == 0 {
+                break;
+            }
+
+            let len = self.piece_len_for_index(piece_index);
+            let piece_buff = &mut self.pieces[piece_index];
+
+            if piece_buff.complete {
+                continue;
+            }
+
+            if *peer_bitfield.get(piece_index).unwrap() {
+                piece_buff.lazy_init(len);
+            }
+
+            for block_index in 0..piece_buff.block_status.len() {
                 if request == 0 {
                     break;
                 }
 
-                let len = self.piece_len_for_index(piece_index);
-                let piece_buff = &mut self.pieces[piece_index];
-
-                if piece_buff.complete {
-                    continue;
-                }
-
-                if *peer_bitfield.get(piece_index).unwrap() {
-                    piece_buff.lazy_init(len);
-                }
-
-                for block_index in 0..piece_buff.block_status.len() {
-                    if request == 0 {
-                        break;
-                    }
-
-                    if piece_buff.block_status[block_index] == BlockState::NotRequested {
-                        piece_buff.block_status[block_index] = BlockState::Requested;
-                        blocks.push(BlockRequest {
-                            piece_index: piece_index as u32,
-                            offset: block_index as u32 * BLOCK_SIZE,
-                            len: BLOCK_SIZE.min(len as u32 - (block_index) as u32 * BLOCK_SIZE),
-                        });
-                        request -= 1;
-                    }
+                if piece_buff.block_status[block_index] == BlockState::NotRequested {
+                    piece_buff.block_status[block_index] = BlockState::Requested;
+                    blocks.push(BlockRequest {
+                        piece_index: piece_index as u32,
+                        offset: block_index as u32 * BLOCK_SIZE,
+                        len: BLOCK_SIZE.min(len as u32 - (block_index) as u32 * BLOCK_SIZE),
+                    });
+                    request -= 1;
                 }
             }
-            blocks
+        }
+        blocks
     }
 
     async fn handle_data(&mut self, slot_id: usize, piece: u32, begin: u32, data: Vec<u8>) {
@@ -352,7 +364,10 @@ impl Scheduler {
                 .ok();
         }
 
-        self.slots.get_mut(slot_id).expect("Peer doesnt exist").in_flight -= 1;
+        self.slots
+            .get_mut(slot_id)
+            .expect("Peer doesnt exist")
+            .in_flight -= 1;
         self.maybe_push_blocks(slot_id).await;
     }
 
@@ -387,7 +402,7 @@ impl PeerHandle {
             am_interested: false,
             peer_choked: true,
             peer_interested: false,
-            in_flight: 0
+            in_flight: 0,
         }
     }
 }

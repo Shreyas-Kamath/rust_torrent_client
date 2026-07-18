@@ -1,10 +1,15 @@
 use bitvec::vec::BitVec;
 use tokio::{
-    io::{self, AsyncReadExt, AsyncWriteExt}, net::{TcpStream, tcp::{OwnedWriteHalf, OwnedReadHalf}}, sync::mpsc::{Receiver, Sender},
+    io::{self, AsyncReadExt, AsyncWriteExt},
+    net::{
+        TcpStream,
+        tcp::{OwnedReadHalf, OwnedWriteHalf},
+    },
+    sync::mpsc::{Receiver, Sender},
 };
 
 use crate::{
-    peers::{MessageID, PeerCommand, PeerReader, PeerWriter, PeerEvent},
+    peers::{MessageID, PeerCommand, PeerEvent, PeerReader, PeerWriter},
     scheduler::BlockRequest,
 };
 
@@ -33,12 +38,15 @@ impl TryFrom<u8> for MessageID {
 
 impl PeerWriter {
     fn new(writer: OwnedWriteHalf, peer_command_rx: Receiver<PeerCommand>) -> Self {
-        Self { writer, peer_command_rx }
+        Self {
+            writer,
+            peer_command_rx,
+        }
     }
 
     async fn run(mut self) -> io::Result<()> {
         while let Some(cmd) = self.peer_command_rx.recv().await {
-            match cmd { 
+            match cmd {
                 PeerCommand::Shutdown => {
                     return Ok(());
                 }
@@ -130,13 +138,23 @@ impl PeerWriter {
 
         self.writer.write_all(&choke_buffer).await
     }
-
 }
 
 impl PeerReader {
-    fn new(slot_id: usize, reader: OwnedReadHalf, peer_event_tx: Sender<PeerEvent>, num_pieces: usize) -> Self {
-        Self { slot_id, reader, peer_event_tx, message_buffer: Vec::new(), num_pieces }
-    } 
+    fn new(
+        slot_id: usize,
+        reader: OwnedReadHalf,
+        peer_event_tx: Sender<PeerEvent>,
+        num_pieces: usize,
+    ) -> Self {
+        Self {
+            slot_id,
+            reader,
+            peer_event_tx,
+            message_buffer: Vec::new(),
+            num_pieces,
+        }
+    }
 
     async fn run(mut self) -> io::Result<()> {
         loop {
@@ -161,50 +179,84 @@ impl PeerReader {
 
         match message_id {
             Ok(MessageID::Choke) => {
-                if self.peer_event_tx.send(PeerEvent::Choke { slot_id: self.slot_id }).await.is_err() {
+                if self
+                    .peer_event_tx
+                    .send(PeerEvent::Choke {
+                        slot_id: self.slot_id,
+                    })
+                    .await
+                    .is_err()
+                {
                     return Ok(());
                 };
             }
             Ok(MessageID::Unchoke) => {
-                if self.peer_event_tx.send(PeerEvent::Unchoke { slot_id: self.slot_id }).await.is_err() {
+                if self
+                    .peer_event_tx
+                    .send(PeerEvent::Unchoke {
+                        slot_id: self.slot_id,
+                    })
+                    .await
+                    .is_err()
+                {
                     return Ok(());
                 };
             }
             Ok(MessageID::Interested) => {
-                if self.peer_event_tx.send(PeerEvent::Interested { slot_id: self.slot_id }).await.is_err() {
+                if self
+                    .peer_event_tx
+                    .send(PeerEvent::Interested {
+                        slot_id: self.slot_id,
+                    })
+                    .await
+                    .is_err()
+                {
                     return Ok(());
                 };
             }
             Ok(MessageID::NotInterested) => {
-                if self.peer_event_tx.send(PeerEvent::NotInterested { slot_id: self.slot_id }).await.is_err() {
-                    return Ok(())
+                if self
+                    .peer_event_tx
+                    .send(PeerEvent::NotInterested {
+                        slot_id: self.slot_id,
+                    })
+                    .await
+                    .is_err()
+                {
+                    return Ok(());
                 };
             }
 
             Ok(MessageID::Have) => {
                 let piece = u32::from_be_bytes(self.message_buffer[0..4].try_into().unwrap());
-                if self.peer_event_tx
+                if self
+                    .peer_event_tx
                     .send(PeerEvent::Have {
                         slot_id: self.slot_id,
                         piece,
                     })
-                    .await.is_err() {
-                        return Ok(());
-                    };
+                    .await
+                    .is_err()
+                {
+                    return Ok(());
+                };
             }
 
             Ok(MessageID::Bitfield) => {
                 // we usually wait and the scan the bitfield if we need a piece
                 // but for testing send interested anyway
                 let bitfield = self.parse_bitfield()?;
-                if self.peer_event_tx
+                if self
+                    .peer_event_tx
                     .send(PeerEvent::Bitfield {
                         slot_id: self.slot_id,
                         bitfield,
                     })
-                    .await.is_err() {
-                        return Ok(());
-                    };
+                    .await
+                    .is_err()
+                {
+                    return Ok(());
+                };
             }
 
             Ok(MessageID::Request) => {
@@ -217,11 +269,19 @@ impl PeerReader {
                     let begin = u32::from_be_bytes(self.message_buffer[4..8].try_into().unwrap());
                     let data = std::mem::take(&mut self.message_buffer);
 
-                    if self.peer_event_tx
-                        .send(PeerEvent::Data { slot_id: self.slot_id, piece, begin, data })
-                        .await.is_err() {
-                            return Ok(());
-                        }
+                    if self
+                        .peer_event_tx
+                        .send(PeerEvent::Data {
+                            slot_id: self.slot_id,
+                            piece,
+                            begin,
+                            data,
+                        })
+                        .await
+                        .is_err()
+                    {
+                        return Ok(());
+                    }
                 }
             }
 
@@ -263,65 +323,70 @@ impl PeerReader {
     }
 }
 
-    pub async fn run_peer(slot_id: usize, info_hash: [u8; 20], mut stream: TcpStream, peer_event_tx: Sender<PeerEvent>, peer_command_rx: Receiver<PeerCommand>, num_pieces: usize) {
-        let tx_clone = peer_event_tx.clone();
+pub async fn run_peer(
+    slot_id: usize,
+    info_hash: [u8; 20],
+    mut stream: TcpStream,
+    peer_event_tx: Sender<PeerEvent>,
+    peer_command_rx: Receiver<PeerCommand>,
+    num_pieces: usize,
+) {
+    let tx_clone = peer_event_tx.clone();
 
-        if do_handshake(&mut stream, info_hash).await.is_err() {
-            let _ = tx_clone.send(PeerEvent::Disconnect { slot_id }).await;
-            return;
-        }
-
-        let (reader, writer) = stream.into_split();
-
-        let reader = PeerReader::new(slot_id, reader, peer_event_tx, num_pieces);
-        let writer = PeerWriter::new(writer, peer_command_rx);
-
-        let mut reader = tokio::spawn(reader.run());
-        let mut writer = tokio::spawn(writer.run());
-
-        tokio::select! {
-            _ = &mut reader => {
-                writer.abort();
-            }
-
-            _ = &mut writer => {
-                reader.abort();
-            }
-        }
-        let _ = tx_clone
-            .send(PeerEvent::Disconnect { slot_id })
-            .await;
-    }
-    
-    async fn do_handshake(stream: &mut TcpStream, info_hash: [u8; 20]) -> tokio::io::Result<()> {
-        let mut handshake_buf = [0u8; 68];
-        handshake_buf[0] = 19;
-        handshake_buf[1..1 + P_STR_PROTOCOL.len()].copy_from_slice(P_STR_PROTOCOL);
-        handshake_buf[28..28 + info_hash.len()].copy_from_slice(&info_hash);
-        handshake_buf[48..48 + PEER_ID.len()].copy_from_slice(PEER_ID);
-
-        stream.write_all(&handshake_buf).await?;
-
-        let mut incoming_handshake_buff = [0u8; 68];
-        stream.read_exact(&mut incoming_handshake_buff).await?;
-
-        validate_handshake(&incoming_handshake_buff, info_hash)?;
-
-        Ok(())
+    if do_handshake(&mut stream, info_hash).await.is_err() {
+        let _ = tx_clone.send(PeerEvent::Disconnect { slot_id }).await;
+        return;
     }
 
-    fn validate_handshake(peer_handshake: &[u8; 68], info_hash: [u8; 20]) -> tokio::io::Result<()> {
-        if peer_handshake[0] != 19 {
-            return Err(io::Error::other("Bad pstrlen"));
+    let (reader, writer) = stream.into_split();
+
+    let reader = PeerReader::new(slot_id, reader, peer_event_tx, num_pieces);
+    let writer = PeerWriter::new(writer, peer_command_rx);
+
+    let mut reader = tokio::spawn(reader.run());
+    let mut writer = tokio::spawn(writer.run());
+
+    tokio::select! {
+        _ = &mut reader => {
+            writer.abort();
         }
 
-        if peer_handshake[1..20] != *P_STR_PROTOCOL {
-            return Err(io::Error::other("Bad protocol"));
+        _ = &mut writer => {
+            reader.abort();
         }
-
-        if peer_handshake[28..48] != info_hash {
-            return Err(io::Error::other("Info hash mismatch"));
-        }
-
-        Ok(())
     }
+    let _ = tx_clone.send(PeerEvent::Disconnect { slot_id }).await;
+}
+
+async fn do_handshake(stream: &mut TcpStream, info_hash: [u8; 20]) -> tokio::io::Result<()> {
+    let mut handshake_buf = [0u8; 68];
+    handshake_buf[0] = 19;
+    handshake_buf[1..1 + P_STR_PROTOCOL.len()].copy_from_slice(P_STR_PROTOCOL);
+    handshake_buf[28..28 + info_hash.len()].copy_from_slice(&info_hash);
+    handshake_buf[48..48 + PEER_ID.len()].copy_from_slice(PEER_ID);
+
+    stream.write_all(&handshake_buf).await?;
+
+    let mut incoming_handshake_buff = [0u8; 68];
+    stream.read_exact(&mut incoming_handshake_buff).await?;
+
+    validate_handshake(&incoming_handshake_buff, info_hash)?;
+
+    Ok(())
+}
+
+fn validate_handshake(peer_handshake: &[u8; 68], info_hash: [u8; 20]) -> tokio::io::Result<()> {
+    if peer_handshake[0] != 19 {
+        return Err(io::Error::other("Bad pstrlen"));
+    }
+
+    if peer_handshake[1..20] != *P_STR_PROTOCOL {
+        return Err(io::Error::other("Bad protocol"));
+    }
+
+    if peer_handshake[28..48] != info_hash {
+        return Err(io::Error::other("Info hash mismatch"));
+    }
+
+    Ok(())
+}

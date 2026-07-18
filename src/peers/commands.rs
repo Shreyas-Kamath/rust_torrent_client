@@ -1,7 +1,11 @@
 use bitvec::vec::BitVec;
 use std::net::SocketAddr;
 use tokio::{
-    net::{TcpStream, tcp::{OwnedReadHalf, OwnedWriteHalf}}, sync::mpsc::{Receiver, Sender},
+    net::{
+        TcpStream,
+        tcp::{OwnedReadHalf, OwnedWriteHalf},
+    },
+    sync::mpsc::{Receiver, Sender},
 };
 
 use crate::scheduler::BlockRequest;
@@ -46,12 +50,12 @@ pub enum PeerEvent {
     },
 
     Interested {
-        slot_id: usize, 
+        slot_id: usize,
     },
 
     NotInterested {
         slot_id: usize,
-    }
+    },
 }
 
 #[derive(Debug)]
