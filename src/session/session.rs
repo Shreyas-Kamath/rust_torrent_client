@@ -101,16 +101,12 @@ impl Session {
 // get tracker URLs from the TorrentResponse struct and deduplicate them using a HashSet, and return it.
 fn get_tracker_urls(announce: &str, list: Option<&[Vec<String>]>) -> HashSet<String> {
     let mut set: HashSet<String> = HashSet::new();
-    if !announce.starts_with("udp") {
-        set.insert(announce.to_string());
-    }
+    set.insert(announce.to_string());
 
     if let Some(list) = list {
         for tier in list {
             for url in tier {
-                if !url.starts_with("udp") {
                     set.insert(url.to_string());
-                }
             }
         }
     }

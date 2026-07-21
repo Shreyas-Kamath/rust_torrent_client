@@ -41,7 +41,7 @@ impl HTTPTracker {
                             .send(SessionEvent::AnnounceFailure { error })
                             .await
                             .ok();
-                        return tokio::time::Duration::from_secs(DEFAULT_ANNOUNCE_TIMER);
+                        return tokio::time::Duration::from_secs(DEFAULT_ANNOUNCE_TIMER)
                     }
 
                     self.sender
@@ -61,7 +61,6 @@ impl HTTPTracker {
                         })
                         .await
                         .ok();
-
                     tokio::time::Duration::from_secs(DEFAULT_ANNOUNCE_TIMER)
                 }
             },
@@ -100,7 +99,6 @@ impl HTTPTracker {
                 Some(cmd) = rx.recv() => {
                     match cmd {
                         TrackerCommand::Shutdown => break,
-
                         TrackerCommand::ForceReannounce => {
                             self.perform_announce().await;
                         }

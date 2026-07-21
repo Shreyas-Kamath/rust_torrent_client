@@ -19,7 +19,7 @@ use crate::{
 };
 
 const BLOCK_SIZE: u32 = 16384;
-const MAX_IN_FLIGHT: u32 = 32;
+const MAX_IN_FLIGHT: u32 = 40;
 
 impl PieceBuffer {
     fn lazy_init(&mut self, piece_len: u64) {
@@ -218,12 +218,13 @@ impl Scheduler {
         let am_interested = &peer_handle.am_interested;
 
         if !am_interested {
-            peer_handle.sender.send(PeerCommand::SendInterested).await;
+            let _ = peer_handle.sender.send(PeerCommand::SendInterested).await;
         }
 
         self.maybe_push_blocks(slot_id).await;
     }
 
+    // these 4 can probably be compressed into one function with a type param
     fn handle_choke(&mut self, slot_id: usize) {
         let peer_handle = self.slots.get_mut(slot_id).expect("Peer doesnt exist");
 
@@ -257,6 +258,9 @@ impl Scheduler {
         }
     }
 
+    // only set and indicate interest
+    // perhaps an actual check to see whether there are any interesting pieces would be nice
+    // but I am too lazy
     async fn handle_bitfield(&mut self, slot_id: usize, bitfield: BitVec) {
         let peer_handle = self.slots.get_mut(slot_id).unwrap();
         peer_handle.bitfield = bitfield;
@@ -264,13 +268,14 @@ impl Scheduler {
         let am_interested = &peer_handle.am_interested;
 
         if !am_interested {
-            peer_handle.sender.send(PeerCommand::SendInterested).await;
+            let _ = peer_handle.sender.send(PeerCommand::SendInterested).await;
             peer_handle.am_interested = true;
         }
 
         // maybe request blocks here too?
     }
 
+    // request iff I am interested, not choked, and I have <= max requests in flight / 2
     async fn maybe_push_blocks(&mut self, slot_id: usize) {
         let (should_request, in_flight) = {
             let peer_handle = self.slots.get(slot_id).expect("Peer doesnt exist");
@@ -287,7 +292,7 @@ impl Scheduler {
         if !blocks.is_empty() {
             let peer_handle = self.slots.get_mut(slot_id).expect("Peer doesnt exist");
             let len = blocks.len() as u32;
-            peer_handle
+            let _ = peer_handle
                 .sender
                 .send(PeerCommand::BlocksToDownload { blocks })
                 .await;
@@ -295,6 +300,9 @@ impl Scheduler {
         }
     }
 
+    // FCFS, this is very naive and I should probably switch to rarest first, or something heap based
+    // ordered by the number of peers who have it
+    // but how tf are you supposed to modify it on the fly?
     fn push_blocks(&mut self, slot_id: usize, mut request: u32) -> Vec<BlockRequest> {
         let peer_bitfield = &self.slots.get(slot_id).expect("Peer doesnt exist").bitfield;
         let mut blocks: Vec<BlockRequest> = Vec::with_capacity(request as usize);
@@ -334,6 +342,8 @@ impl Scheduler {
         blocks
     }
 
+    // Only work this does is append the data to an existing vector, manage completion and send the piece 
+    // into the disk writer task for verification
     async fn handle_data(&mut self, slot_id: usize, piece: u32, begin: u32, data: Vec<u8>) {
         let begin = begin as usize;
         let block = begin / BLOCK_SIZE as usize;
@@ -371,11 +381,15 @@ impl Scheduler {
         self.maybe_push_blocks(slot_id).await;
     }
 
+    // cleanup or download more RAM
+    // broadcast to all peers that I have the piece
     async fn on_complete_piece(&mut self, piece: u32) {
         let piece_buffer = self.pieces.get_mut(piece as usize).unwrap();
         piece_buffer.complete_and_cleanup();
         println!("Piece {piece} is complete");
 
+        // a naive scan over a slab is deemed bad because it scans tombstone slots too
+        // this is the only linear scan over the slab
         for (_, peer_handle) in &self.slots {
             peer_handle
                 .sender
@@ -385,6 +399,8 @@ impl Scheduler {
         }
     }
 
+    // who cares how the piece failed?
+    // Retry anyway, either a hash or write failure
     fn handle_failure(&mut self, piece: u32) {
         println!("Piece {piece} failed");
         let piece_buffer = self.pieces.get_mut(piece as usize).unwrap();

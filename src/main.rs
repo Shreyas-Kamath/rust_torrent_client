@@ -1,5 +1,3 @@
-use iced;
-
 mod client;
 mod disk;
 mod parser;

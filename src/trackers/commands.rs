@@ -1,6 +1,6 @@
 use serde::Deserialize;
 
-// use crate::trackers::udp::UDPTracker;
+use crate::trackers::udp::UDPTracker;
 use crate::trackers::http::HTTPTracker;
 
 pub enum TrackerCommand {
@@ -24,6 +24,6 @@ pub struct TrackerResponse {
 }
 
 pub enum Tracker {
-    // UDP(UDPTracker),
+    UDP(UDPTracker),
     HTTP(HTTPTracker),
 }

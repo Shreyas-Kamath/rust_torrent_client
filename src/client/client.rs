@@ -36,9 +36,7 @@ pub async fn run(mut rx: mpsc::Receiver<ui::commands::UIToClientCommand>) -> Res
                     tokio::spawn(session.run(session_rx));
                     session_map.insert(id, session_tx);
                 }
-                Err(e) => {
-                    eprintln!("Some error: {e}");
-                }
+                Err(_) => {}
             },
             _ => {
                 println!("Not implemented yet");
