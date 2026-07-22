@@ -1,17 +1,17 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashSet,
     net::SocketAddr,
 };
 
 use bitvec::vec::BitVec;
 use slab::Slab;
-use tokio::sync::mpsc::Sender;
+use tokio::{sync::mpsc::Sender, time::Instant};
 
 use crate::{
     disk::DiskEvent,
     peers::{
         Peer,
-        commands::{PeerCommand, PeerEvent},
+        PeerCommand,
     },
 };
 
@@ -37,6 +37,7 @@ pub enum BlockState {
     Received,
 }
 
+#[derive(Clone, PartialEq)]
 pub struct BlockRequest {
     pub piece_index: u32,
     pub offset: u32,
@@ -51,6 +52,12 @@ pub struct Scheduler {
     pub total_len: u64,
     pub piece_len: u64,
     pub disk_event_sender: Sender<DiskEvent>,
+    pub completed_pieces: u32,
+}
+
+pub struct InFlightBlock {
+    pub request: BlockRequest,
+    pub sent_at: Instant
 }
 
 pub struct PeerHandle {
@@ -64,5 +71,5 @@ pub struct PeerHandle {
     pub peer_interested: bool,
     pub am_interested: bool,
 
-    pub in_flight: u32,
+    pub in_flight: Vec<InFlightBlock>,
 }

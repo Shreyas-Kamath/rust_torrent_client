@@ -11,12 +11,11 @@ impl App {
     fn add_torrent(&self) -> Task<Message> {
         Task::perform(
             async {
-                let file_handle = AsyncFileDialog::new()
+                AsyncFileDialog::new()
                     .set_title("Select a .torrent file")
                     .add_filter("Torrent files", &["torrent"])
                     .pick_file()
-                    .await;
-                file_handle
+                    .await
             },
             Message::TorrentLoaded,
         )

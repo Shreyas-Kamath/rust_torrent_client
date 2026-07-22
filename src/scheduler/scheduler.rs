@@ -1,10 +1,9 @@
-use std::{collections::HashSet, net::SocketAddr};
+use std::{collections::HashSet, net::SocketAddr, time::Duration};
 
 use bitvec::vec::BitVec;
 use slab::Slab;
 use tokio::{
-    net::TcpStream,
-    sync::mpsc::{self, Receiver, Sender},
+    net::TcpStream, sync::mpsc::{self, Receiver, Sender}, time,
 };
 
 use crate::{
@@ -15,11 +14,13 @@ use crate::{
         commands::{PeerCommand, PeerEvent},
         run_peer,
     },
-    scheduler::{BlockRequest, BlockState, PeerHandle, PieceBuffer, Scheduler, SchedulerEvent},
+    scheduler::{BlockRequest, BlockState, PeerHandle, PieceBuffer, Scheduler, SchedulerEvent, InFlightBlock},
 };
 
 const BLOCK_SIZE: u32 = 16384;
 const MAX_IN_FLIGHT: u32 = 40;
+const TIMEOUT_SCAN_INTERVAL: u32 = 5;
+const REQUEST_TIMEOUT: u32 = 15;
 
 impl PieceBuffer {
     fn lazy_init(&mut self, piece_len: u64) {
@@ -66,6 +67,7 @@ impl Scheduler {
             total_len,
             piece_len,
             disk_event_sender,
+            completed_pieces: 0,
         }
     }
 
@@ -89,6 +91,11 @@ impl Scheduler {
             disk_response_tx,
         );
         tokio::spawn(disk.run(file_list, disk_event_receiver));
+
+        let mut watchdog: time::Interval = time::interval_at(
+            time::Instant::now() + Duration::from_secs(20),
+            Duration::from_secs(TIMEOUT_SCAN_INTERVAL.into()),
+        );
 
         loop {
             tokio::select! {
@@ -122,7 +129,7 @@ impl Scheduler {
                         PeerEvent::Connect { stream, peer } => {
                             self.existing_peers.insert(peer.addr);
 
-                            let (tx, rx) = mpsc::channel::<PeerCommand>(32);
+                            let (tx, rx) = mpsc::channel::<PeerCommand>(100);
                             let peer_handle = PeerHandle::new(tx, peer.addr);
                             let slot_id = self.slots.insert(peer_handle);
                             tokio::spawn(run_peer(slot_id, info_hash, stream, peer_tx.clone(), rx, self.num_pieces));
@@ -137,6 +144,7 @@ impl Scheduler {
                         }
 
                         PeerEvent::Disconnect { slot_id } => {
+                            // one last cleanup
                             self.remove_peer(slot_id);
                         }
 
@@ -161,6 +169,37 @@ impl Scheduler {
                             self.handle_not_interested(slot_id);
                         }
                     }
+                }
+                _ = watchdog.tick() => {
+                    self.scan_timeouts();
+                }
+            }
+        }
+    }
+
+    fn scan_timeouts(&mut self) {
+        let now = time::Instant::now();
+
+        for (_, peer_handle) in &mut self.slots {
+            let inflight = &mut peer_handle.in_flight;
+            let mut i = 0;
+
+            while i < inflight.len() {
+                if now.duration_since(inflight[i].sent_at) >= Duration::from_secs(REQUEST_TIMEOUT as u64) {
+                    let BlockRequest { piece_index, offset, .. } = &inflight[i].request;
+                    
+                    // make this a function later
+                    let piece = &mut self.pieces[*piece_index as usize];
+                    let block_index = (offset / BLOCK_SIZE) as usize;
+
+                    if !piece.complete && piece.block_status[block_index] == BlockState::Requested {
+                        piece.block_status[block_index] = BlockState::NotRequested;
+                    }
+
+                    inflight.swap_remove(i);
+                }
+                else {
+                    i += 1;
                 }
             }
         }
@@ -195,6 +234,18 @@ impl Scheduler {
     }
 
     fn remove_peer(&mut self, unique_id: usize) {
+        let inflightblocks = &self.slots.get_mut(unique_id).unwrap().in_flight;
+
+        for InFlightBlock { request, .. } in inflightblocks {
+            let BlockRequest { piece_index, offset, .. } = request;
+            let piece = &mut self.pieces[*piece_index as usize];
+            let block_index = (offset / BLOCK_SIZE) as usize;
+
+            if !piece.complete && piece.block_status[block_index] == BlockState::Requested {
+                piece.block_status[block_index] = BlockState::NotRequested;
+            }
+        }
+
         let removed = self
             .slots
             .try_remove(unique_id)
@@ -203,11 +254,12 @@ impl Scheduler {
         self.existing_peers.remove(&removed.addr);
     }
 
-    fn piece_len_for_index(&self, index: usize) -> u64 {
-        if index < self.num_pieces - 1 {
-            self.piece_len
+    // precompute this shit for god's sake
+    fn piece_len_for_index(num_pieces: usize, total_len: u64, piece_len: u64, index: usize) -> u64 {
+        if index < num_pieces - 1 {
+            piece_len
         } else {
-            self.total_len - self.piece_len * (self.num_pieces as u64 - 1)
+            total_len - piece_len * (num_pieces as u64 - 1)
         }
     }
 
@@ -281,22 +333,20 @@ impl Scheduler {
             let peer_handle = self.slots.get(slot_id).expect("Peer doesnt exist");
             (
                 peer_handle.am_interested && !peer_handle.am_choked,
-                peer_handle.in_flight,
+                peer_handle.in_flight.len(),
             )
         };
-        if !should_request || in_flight > MAX_IN_FLIGHT / 2 {
+        if !should_request || in_flight as u32 > MAX_IN_FLIGHT / 2 {
             return;
         }
 
-        let blocks = self.push_blocks(slot_id, MAX_IN_FLIGHT - in_flight);
+        let blocks = self.push_blocks(slot_id, MAX_IN_FLIGHT - in_flight as u32);
         if !blocks.is_empty() {
             let peer_handle = self.slots.get_mut(slot_id).expect("Peer doesnt exist");
-            let len = blocks.len() as u32;
             let _ = peer_handle
                 .sender
                 .send(PeerCommand::BlocksToDownload { blocks })
                 .await;
-            peer_handle.in_flight += len;
         }
     }
 
@@ -304,7 +354,7 @@ impl Scheduler {
     // ordered by the number of peers who have it
     // but how tf are you supposed to modify it on the fly?
     fn push_blocks(&mut self, slot_id: usize, mut request: u32) -> Vec<BlockRequest> {
-        let peer_bitfield = &self.slots.get(slot_id).expect("Peer doesnt exist").bitfield;
+        let peer_handle = self.slots.get_mut(slot_id).expect("Peer doesnt exist");
         let mut blocks: Vec<BlockRequest> = Vec::with_capacity(request as usize);
 
         for piece_index in 0..self.pieces.len() {
@@ -312,29 +362,31 @@ impl Scheduler {
                 break;
             }
 
-            let len = self.piece_len_for_index(piece_index);
+            let len = Self::piece_len_for_index(self.num_pieces, self.total_len, self.piece_len, piece_index);
             let piece_buff = &mut self.pieces[piece_index];
 
             if piece_buff.complete {
                 continue;
             }
 
-            if *peer_bitfield.get(piece_index).unwrap() {
+            if *peer_handle.bitfield.get(piece_index).unwrap() {
                 piece_buff.lazy_init(len);
             }
 
             for block_index in 0..piece_buff.block_status.len() {
-                if request == 0 {
-                    break;
-                }
+                if request == 0 { break; }
 
                 if piece_buff.block_status[block_index] == BlockState::NotRequested {
                     piece_buff.block_status[block_index] = BlockState::Requested;
-                    blocks.push(BlockRequest {
+
+                    let block_request = BlockRequest {
                         piece_index: piece_index as u32,
                         offset: block_index as u32 * BLOCK_SIZE,
                         len: BLOCK_SIZE.min(len as u32 - (block_index) as u32 * BLOCK_SIZE),
-                    });
+                    };
+                    
+                    blocks.push(block_request.clone());
+                    peer_handle.in_flight.push(InFlightBlock { request: block_request, sent_at: time::Instant::now() });
                     request -= 1;
                 }
             }
@@ -345,16 +397,18 @@ impl Scheduler {
     // Only work this does is append the data to an existing vector, manage completion and send the piece 
     // into the disk writer task for verification
     async fn handle_data(&mut self, slot_id: usize, piece: u32, begin: u32, data: Vec<u8>) {
+        let peer_handle = self.slots.get_mut(slot_id).unwrap();
+        if let Some(pos) = peer_handle.in_flight.iter().position(|block| block.request == BlockRequest { piece_index: piece, offset: begin, len: data.len() as u32 }) {
+            peer_handle.in_flight.swap_remove(pos);
+        }
+
         let begin = begin as usize;
         let block = begin / BLOCK_SIZE as usize;
 
         let piece_buffer = &mut self.pieces[piece as usize];
         let block_status = &mut piece_buffer.block_status;
 
-        if piece_buffer.complete {
-            return;
-        }
-        if block_status[block] == BlockState::Received {
+        if piece_buffer.complete || block_status[block] == BlockState::Received {
             return;
         }
 
@@ -374,10 +428,6 @@ impl Scheduler {
                 .ok();
         }
 
-        self.slots
-            .get_mut(slot_id)
-            .expect("Peer doesnt exist")
-            .in_flight -= 1;
         self.maybe_push_blocks(slot_id).await;
     }
 
@@ -386,7 +436,9 @@ impl Scheduler {
     async fn on_complete_piece(&mut self, piece: u32) {
         let piece_buffer = self.pieces.get_mut(piece as usize).unwrap();
         piece_buffer.complete_and_cleanup();
-        println!("Piece {piece} is complete");
+        self.completed_pieces += 1;
+
+        println!("Completed {} pieces", self.completed_pieces);
 
         // a naive scan over a slab is deemed bad because it scans tombstone slots too
         // this is the only linear scan over the slab
@@ -418,7 +470,7 @@ impl PeerHandle {
             am_interested: false,
             peer_choked: true,
             peer_interested: false,
-            in_flight: 0,
+            in_flight: Vec::with_capacity(MAX_IN_FLIGHT as usize),
         }
     }
 }

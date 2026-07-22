@@ -101,7 +101,7 @@ impl UDPContext {
         buffer[8..12].copy_from_slice(&1u32.to_be_bytes());
         buffer[12..16].copy_from_slice(&transaction_id.to_be_bytes());
         buffer[16..36].copy_from_slice(info_hash);
-        buffer[36..56].copy_from_slice(&PEER_ID);
+        buffer[36..56].copy_from_slice(PEER_ID);
 
         // add downloaded, left, uploaded
         buffer[56..64].copy_from_slice(&0u64.to_be_bytes());
@@ -158,11 +158,11 @@ impl UDPContext {
         match self.remote {
             SocketAddr::V4(_) => {
                 let peers = self.parse_v4_peers(&response[20..])?;
-                return Ok(UDPResponse { peers, leechers, seeders, interval })
+                Ok(UDPResponse { peers, leechers, seeders, interval })
             }
             SocketAddr::V6(_) => {
                 let peers = self.parse_peers_v6(&response[20..])?;
-                return Ok(UDPResponse { peers, leechers, seeders, interval })
+                Ok(UDPResponse { peers, leechers, seeders, interval })
             }
         }
     }

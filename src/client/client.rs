@@ -1,10 +1,7 @@
 use crate::client::commands::ClientCommand;
 use crate::parser::commands::Torrent;
-use crate::trackers::commands::TrackerCommand;
 use std::{collections::HashMap, path::PathBuf};
 use tokio::{io::Result, sync::mpsc};
-
-use crate::session;
 
 use crate::session::commands::Session;
 use crate::{
@@ -36,6 +33,7 @@ pub async fn run(mut rx: mpsc::Receiver<ui::commands::UIToClientCommand>) -> Res
                     tokio::spawn(session.run(session_rx));
                     session_map.insert(id, session_tx);
                 }
+                // do something with this shit
                 Err(_) => {}
             },
             _ => {

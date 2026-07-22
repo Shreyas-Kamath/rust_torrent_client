@@ -92,13 +92,7 @@ impl Disk {
             let file = self.output_files.get_mut(idx).unwrap();
             let file_handle = &mut file.handle;
 
-            let file_offset = {
-                if piece_offset > file.offset {
-                    piece_offset - file.offset
-                } else {
-                    0
-                }
-            };
+            let file_offset = piece_offset.saturating_sub(file.offset);
 
             let write_len = remaining.min(file.len - file_offset);
 
