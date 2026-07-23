@@ -3,7 +3,9 @@ use std::{io::SeekFrom, path::PathBuf};
 use bitvec::bitvec;
 use sha1::{Digest, Sha1};
 use tokio::{
-    fs, io::{self, AsyncReadExt, AsyncSeekExt, AsyncWriteExt}, sync::mpsc::{Receiver, Sender},
+    fs,
+    io::{self, AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
+    sync::mpsc::{Receiver, Sender},
 };
 
 use crate::{
@@ -53,16 +55,14 @@ impl Disk {
             loop {
                 match savefile.read_u32_le().await {
                     Ok(index) => bitfield.set(index as usize, true),
-                    Err(e) => {
-                        if e.kind() == io::ErrorKind::UnexpectedEof {
-                            eprintln!("Reached end of savefile");
-                            break;
-                        }
-                    }
+                    Err(_) => break,
                 }
             }
         }
-        self.disk_response_tx.send(DiskResponse::CompletedPieces { bitfield }).await.ok();
+        self.disk_response_tx
+            .send(DiskResponse::CompletedPieces { bitfield })
+            .await
+            .ok();
     }
 
     async fn try_hash_and_write(&mut self, piece: u32, data: Vec<u8>) {
@@ -87,9 +87,9 @@ impl Disk {
             .await
             .ok();
 
-        // if let Some(savefile) = &mut self.savefile {
-        //     savefile.write_u32_le(piece).await.unwrap();
-        // }
+        if let Some(savefile) = &mut self.savefile {
+            savefile.write_u32_le(piece).await.expect("Could not write to savefile");
+        }
     }
 
     fn do_hash(&self, piece: u32, data: &[u8]) -> bool {
@@ -149,7 +149,7 @@ impl Disk {
 
     async fn build_output_files(&mut self, file_list: Option<Vec<File>>) {
         let base = PathBuf::from(&self.torrent_name);
-        
+
         if let Some(ref file_list) = file_list {
             let mut offset: u64 = 0;
 
@@ -212,7 +212,7 @@ impl Disk {
         } else {
             PathBuf::from(format!("{}.fastresume", self.torrent_name))
         };
-        
+
         self.savefile = Some(
             fs::OpenOptions::new()
                 .create(true)
