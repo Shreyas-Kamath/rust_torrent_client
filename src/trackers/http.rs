@@ -41,7 +41,7 @@ impl HTTPTracker {
                             .send(SessionEvent::AnnounceFailure { error })
                             .await
                             .ok();
-                        return tokio::time::Duration::from_secs(DEFAULT_ANNOUNCE_TIMER)
+                        return tokio::time::Duration::from_secs(DEFAULT_ANNOUNCE_TIMER);
                     }
 
                     self.sender

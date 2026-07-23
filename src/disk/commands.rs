@@ -14,12 +14,12 @@ pub struct Disk {
     pub total_len: u64,
     pub piece_hashes: Vec<[u8; 20]>,
     pub disk_response_tx: Sender<DiskResponse>,
+    pub savefile: Option<fs::File>,
 }
 
 pub enum DiskEvent {
     TryHashAndWrite { piece: u32, data: Vec<u8> },
     Shutdown,
-    GetAlreadyCompleted,
 }
 
 pub enum DiskResponse {

@@ -14,8 +14,7 @@ impl Tracker {
     ) -> Self {
         if url.starts_with("udp://") {
             Self::UDP(UDPTracker::new(url, info_hash, sender))
-        }
-        else {
+        } else {
             Self::HTTP(HTTPTracker::new(url, http_client, info_hash, sender))
         }
     }

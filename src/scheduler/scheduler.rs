@@ -1,9 +1,11 @@
-use std::{collections::HashSet, net::SocketAddr, time::Duration};
+use std::{collections::HashSet, iter::zip, net::SocketAddr, time::Duration};
 
 use bitvec::vec::BitVec;
 use slab::Slab;
 use tokio::{
-    net::TcpStream, sync::mpsc::{self, Receiver, Sender}, time,
+    net::TcpStream,
+    sync::mpsc::{self, Receiver, Sender},
+    time,
 };
 
 use crate::{
@@ -14,7 +16,9 @@ use crate::{
         commands::{PeerCommand, PeerEvent},
         run_peer,
     },
-    scheduler::{BlockRequest, BlockState, PeerHandle, PieceBuffer, Scheduler, SchedulerEvent, InFlightBlock},
+    scheduler::{
+        BlockRequest, BlockState, InFlightBlock, PeerHandle, PieceBuffer, Scheduler, SchedulerEvent,
+    },
 };
 
 const BLOCK_SIZE: u32 = 16384;
@@ -101,7 +105,7 @@ impl Scheduler {
             tokio::select! {
                 Some(cmd) = disk_response_rx.recv() => {
                     match cmd {
-                        DiskResponse::CompletedPieces { bitfield } => { todo!(); }
+                        DiskResponse::CompletedPieces { bitfield } => { self.parse_completed_pieces(bitfield); }
                         DiskResponse::HashFailed { piece } => { self.handle_failure(piece); }
                         DiskResponse::WriteFailed { piece } => { self.handle_failure(piece); }
                         DiskResponse::PieceHashedAndWritten { piece } => { self.on_complete_piece(piece).await; }
@@ -112,6 +116,7 @@ impl Scheduler {
                 Some(cmd) = rx.recv() => {
                     match cmd {
                         SchedulerEvent::LaunchPeers { peers } => {
+                            println!("Received {} peers", peers.len());
                             self.dedup_and_start_peers(peers, peer_tx.clone()).await;
                         }
 
@@ -177,6 +182,20 @@ impl Scheduler {
         }
     }
 
+    fn parse_completed_pieces(&mut self, bitfield: BitVec) {
+        assert_eq!(bitfield.len(), self.pieces.len());
+
+        let mut completed = 0;
+        for (bit, piece_buff) in zip(bitfield, &mut self.pieces) {
+            if bit { 
+                completed += 1;
+                piece_buff.complete = true; 
+            }
+        }
+
+        println!("Found {completed} completed pieces");
+    }
+
     fn scan_timeouts(&mut self) {
         let now = time::Instant::now();
 
@@ -185,9 +204,15 @@ impl Scheduler {
             let mut i = 0;
 
             while i < inflight.len() {
-                if now.duration_since(inflight[i].sent_at) >= Duration::from_secs(REQUEST_TIMEOUT as u64) {
-                    let BlockRequest { piece_index, offset, .. } = &inflight[i].request;
-                    
+                if now.duration_since(inflight[i].sent_at)
+                    >= Duration::from_secs(REQUEST_TIMEOUT as u64)
+                {
+                    let BlockRequest {
+                        piece_index,
+                        offset,
+                        ..
+                    } = &inflight[i].request;
+
                     // make this a function later
                     let piece = &mut self.pieces[*piece_index as usize];
                     let block_index = (offset / BLOCK_SIZE) as usize;
@@ -197,8 +222,7 @@ impl Scheduler {
                     }
 
                     inflight.swap_remove(i);
-                }
-                else {
+                } else {
                     i += 1;
                 }
             }
@@ -237,7 +261,11 @@ impl Scheduler {
         let inflightblocks = &self.slots.get_mut(unique_id).unwrap().in_flight;
 
         for InFlightBlock { request, .. } in inflightblocks {
-            let BlockRequest { piece_index, offset, .. } = request;
+            let BlockRequest {
+                piece_index,
+                offset,
+                ..
+            } = request;
             let piece = &mut self.pieces[*piece_index as usize];
             let block_index = (offset / BLOCK_SIZE) as usize;
 
@@ -251,6 +279,7 @@ impl Scheduler {
             .try_remove(unique_id)
             .expect("Received removal event for unknown peer");
 
+        println!("Removed peer {unique_id}");
         self.existing_peers.remove(&removed.addr);
     }
 
@@ -362,7 +391,12 @@ impl Scheduler {
                 break;
             }
 
-            let len = Self::piece_len_for_index(self.num_pieces, self.total_len, self.piece_len, piece_index);
+            let len = Self::piece_len_for_index(
+                self.num_pieces,
+                self.total_len,
+                self.piece_len,
+                piece_index,
+            );
             let piece_buff = &mut self.pieces[piece_index];
 
             if piece_buff.complete {
@@ -374,7 +408,9 @@ impl Scheduler {
             }
 
             for block_index in 0..piece_buff.block_status.len() {
-                if request == 0 { break; }
+                if request == 0 {
+                    break;
+                }
 
                 if piece_buff.block_status[block_index] == BlockState::NotRequested {
                     piece_buff.block_status[block_index] = BlockState::Requested;
@@ -384,9 +420,12 @@ impl Scheduler {
                         offset: block_index as u32 * BLOCK_SIZE,
                         len: BLOCK_SIZE.min(len as u32 - (block_index) as u32 * BLOCK_SIZE),
                     };
-                    
+
                     blocks.push(block_request.clone());
-                    peer_handle.in_flight.push(InFlightBlock { request: block_request, sent_at: time::Instant::now() });
+                    peer_handle.in_flight.push(InFlightBlock {
+                        request: block_request,
+                        sent_at: time::Instant::now(),
+                    });
                     request -= 1;
                 }
             }
@@ -394,11 +433,18 @@ impl Scheduler {
         blocks
     }
 
-    // Only work this does is append the data to an existing vector, manage completion and send the piece 
+    // Only work this does is append the data to an existing vector, manage completion and send the piece
     // into the disk writer task for verification
     async fn handle_data(&mut self, slot_id: usize, piece: u32, begin: u32, data: Vec<u8>) {
         let peer_handle = self.slots.get_mut(slot_id).unwrap();
-        if let Some(pos) = peer_handle.in_flight.iter().position(|block| block.request == BlockRequest { piece_index: piece, offset: begin, len: data.len() as u32 }) {
+        if let Some(pos) = peer_handle.in_flight.iter().position(|block| {
+            block.request
+                == BlockRequest {
+                    piece_index: piece,
+                    offset: begin,
+                    len: data.len() as u32,
+                }
+        }) {
             peer_handle.in_flight.swap_remove(pos);
         }
 

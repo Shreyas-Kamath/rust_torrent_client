@@ -106,7 +106,7 @@ fn get_tracker_urls(announce: &str, list: Option<&[Vec<String>]>) -> HashSet<Str
     if let Some(list) = list {
         for tier in list {
             for url in tier {
-                    set.insert(url.to_string());
+                set.insert(url.to_string());
             }
         }
     }

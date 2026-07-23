@@ -1,7 +1,7 @@
 use serde::Deserialize;
 
-use crate::trackers::udp::UDPTracker;
 use crate::trackers::http::HTTPTracker;
+use crate::trackers::udp::UDPTracker;
 
 pub enum TrackerCommand {
     ForceReannounce,

@@ -1,9 +1,9 @@
 use std::{io::SeekFrom, path::PathBuf};
 
+use bitvec::bitvec;
 use sha1::{Digest, Sha1};
 use tokio::{
-    io::{AsyncSeekExt, AsyncWriteExt},
-    sync::mpsc::{Receiver, Sender},
+    fs, io::{self, AsyncReadExt, AsyncSeekExt, AsyncWriteExt}, sync::mpsc::{Receiver, Sender},
 };
 
 use crate::{
@@ -26,11 +26,13 @@ impl Disk {
             total_len,
             piece_hashes,
             disk_response_tx,
+            savefile: None,
         }
     }
 
     pub async fn run(mut self, file_list: Option<Vec<File>>, mut rx: Receiver<DiskEvent>) {
         self.build_output_files(file_list).await;
+        self.read_savefile().await;
 
         while let Some(cmd) = rx.recv().await {
             match cmd {
@@ -40,11 +42,27 @@ impl Disk {
                 DiskEvent::Shutdown => {
                     todo!();
                 }
-                DiskEvent::GetAlreadyCompleted => {
-                    todo!();
+            }
+        }
+    }
+
+    async fn read_savefile(&mut self) {
+        let mut bitfield = bitvec!(0; self.piece_hashes.len());
+
+        if let Some(savefile) = &mut self.savefile {
+            loop {
+                match savefile.read_u32_le().await {
+                    Ok(index) => bitfield.set(index as usize, true),
+                    Err(e) => {
+                        if e.kind() == io::ErrorKind::UnexpectedEof {
+                            eprintln!("Reached end of savefile");
+                            break;
+                        }
+                    }
                 }
             }
         }
+        self.disk_response_tx.send(DiskResponse::CompletedPieces { bitfield }).await.ok();
     }
 
     async fn try_hash_and_write(&mut self, piece: u32, data: Vec<u8>) {
@@ -68,6 +86,10 @@ impl Disk {
             .send(DiskResponse::PieceHashedAndWritten { piece })
             .await
             .ok();
+
+        if let Some(savefile) = &mut self.savefile {
+            savefile.write_u32_le(piece).await.unwrap();
+        }
     }
 
     fn do_hash(&self, piece: u32, data: &[u8]) -> bool {
@@ -127,13 +149,13 @@ impl Disk {
 
     async fn build_output_files(&mut self, file_list: Option<Vec<File>>) {
         let base = PathBuf::from(&self.torrent_name);
-
-        if let Some(file_list) = file_list {
+        
+        if let Some(ref file_list) = file_list {
             let mut offset: u64 = 0;
 
             for file in file_list {
                 let mut path = base.clone();
-                for comp in file.path {
+                for comp in &file.path {
                     path.push(comp);
                 }
 
@@ -177,12 +199,30 @@ impl Disk {
                 .set_len(self.total_len)
                 .await
                 .expect("Could not preallocate");
+
             self.output_files.push(OutputFile {
                 len: self.total_len,
                 offset: 0,
                 handle,
             });
         }
+
+        let savefile_path = if file_list.is_some() {
+            base.join(format!("{}.fastresume", self.torrent_name))
+        } else {
+            PathBuf::from(format!("{}.fastresume", self.torrent_name))
+        };
+        
+        self.savefile = Some(
+            fs::OpenOptions::new()
+                .create(true)
+                .truncate(false)
+                .read(true)
+                .write(true)
+                .open(savefile_path)
+                .await
+                .expect("Failed to create savefile"),
+        );
 
         self.output_files.sort_by_key(|a| a.offset);
     }

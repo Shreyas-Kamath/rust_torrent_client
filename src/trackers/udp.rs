@@ -1,9 +1,20 @@
-use std::{net::{Ipv4Addr, Ipv6Addr, SocketAddr}, time::Duration};
+use crate::{
+    peers::Peer,
+    session::SessionEvent,
+    trackers::{DEFAULT_ANNOUNCE_TIMER, TrackerCommand},
+};
 use iced::futures::io;
 use rand::random;
 use reqwest::Url;
-use tokio::{net::{UdpSocket, lookup_host}, sync::mpsc::{self, Sender}, time::{self, Instant}};
-use crate::{peers::Peer, session::SessionEvent, trackers::{DEFAULT_ANNOUNCE_TIMER, TrackerCommand}};
+use std::{
+    net::{Ipv4Addr, Ipv6Addr, SocketAddr},
+    time::Duration,
+};
+use tokio::{
+    net::{UdpSocket, lookup_host},
+    sync::mpsc::{self, Sender},
+    time::{self, Instant},
+};
 
 const PEER_ID: &[u8] = b"-TR2940-1234567890ab";
 const PORT: u16 = 6881;
@@ -45,7 +56,11 @@ impl UDPContext {
         let socket = UdpSocket::bind(bind_addr).await?;
         socket.connect(remote).await?;
 
-        Ok(Self { socket, remote, connection: None })
+        Ok(Self {
+            socket,
+            remote,
+            connection: None,
+        })
     }
 
     pub async fn send_connect(&mut self) -> io::Result<()> {
@@ -73,8 +88,11 @@ impl UDPContext {
         if action != 0 || transaction_id != return_transaction_id {
             return Err(io::Error::other("Bad Response"));
         }
-        
-        self.connection = Some(Connection { id: conn, expires: Instant::now() + Duration::from_secs(60) });
+
+        self.connection = Some(Connection {
+            id: conn,
+            expires: Instant::now() + Duration::from_secs(60),
+        });
 
         Ok(())
     }
@@ -151,18 +169,28 @@ impl UDPContext {
         // what do we do with these?
         let leechers = u32::from_be_bytes(response[12..16].try_into().unwrap());
         let seeders = u32::from_be_bytes(response[16..20].try_into().unwrap());
-        
+
         // we have now parsed 5 u32s = 20 bytes
 
         // peers from 20 onwards
         match self.remote {
             SocketAddr::V4(_) => {
                 let peers = self.parse_v4_peers(&response[20..])?;
-                Ok(UDPResponse { peers, leechers, seeders, interval })
+                Ok(UDPResponse {
+                    peers,
+                    leechers,
+                    seeders,
+                    interval,
+                })
             }
             SocketAddr::V6(_) => {
                 let peers = self.parse_peers_v6(&response[20..])?;
-                Ok(UDPResponse { peers, leechers, seeders, interval })
+                Ok(UDPResponse {
+                    peers,
+                    leechers,
+                    seeders,
+                    interval,
+                })
             }
         }
     }
@@ -179,7 +207,10 @@ impl UDPContext {
                 let ip = Ipv4Addr::new(a, b, c, d);
                 let port = u16::from_be_bytes([p1, p2]);
 
-                Peer { addr: SocketAddr::from((ip, port)), id: None }
+                Peer {
+                    addr: SocketAddr::from((ip, port)),
+                    id: None,
+                }
             })
             .collect();
 
@@ -190,16 +221,21 @@ impl UDPContext {
         let (chunks, remainder) = buffer.as_chunks::<18>();
         if !remainder.is_empty() {
             return Err(io::Error::other("Malformed ipv6 peer list"));
-        } 
+        }
 
         let peers = chunks
             .iter()
-            .map(|&[a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p, p1, p2]| {
-                let ip = Ipv6Addr::from([a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p]);
-                let port = u16::from_be_bytes([p1, p2]);
+            .map(
+                |&[a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p, p1, p2]| {
+                    let ip = Ipv6Addr::from([a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p]);
+                    let port = u16::from_be_bytes([p1, p2]);
 
-                Peer { addr: SocketAddr::from((ip, port)), id: None }
-            })
+                    Peer {
+                        addr: SocketAddr::from((ip, port)),
+                        id: None,
+                    }
+                },
+            )
             .collect();
 
         Ok(peers)
@@ -220,7 +256,7 @@ impl UDPTracker {
             ipv6: None,
             leechers: 0,
             seeders: 0,
-            sender
+            sender,
         }
     }
 
@@ -240,7 +276,9 @@ impl UDPTracker {
                 SocketAddr::V6(_) if self.ipv6.is_none() => {
                     self.ipv6 = Some(UDPContext::new(addr).await?);
                 }
-                _ => { println!("What?"); }
+                _ => {
+                    println!("What?");
+                }
             }
         }
 
@@ -251,19 +289,14 @@ impl UDPTracker {
         let (v4, v6) = tokio::join!(
             async {
                 match self.ipv4.as_mut() {
-                    Some(context) => {
-                        context.announce(&self.info_hash).await
-                    }
+                    Some(context) => context.announce(&self.info_hash).await,
                     None => Err(io::Error::other("No IPV4 context")),
                 }
             },
-
             async {
                 match self.ipv6.as_mut() {
-                    Some(context) => {
-                        context.announce(&self.info_hash).await
-                    }
-                    None => Err(io::Error::other("No IPV6 context"))
+                    Some(context) => context.announce(&self.info_hash).await,
+                    None => Err(io::Error::other("No IPV6 context")),
                 }
             }
         );
@@ -273,10 +306,7 @@ impl UDPTracker {
 
         match (v4, v6) {
             (Err(e1), Err(e2)) => {
-                let error = format!(
-                    "IPv4: {}; IPv6: {}",
-                    e1, e2
-                );
+                let error = format!("IPv4: {}; IPv6: {}", e1, e2);
 
                 self.sender
                     .send(SessionEvent::AnnounceFailure { error })
@@ -298,10 +328,16 @@ impl UDPTracker {
                     peers.extend(response.peers);
                     interval = interval.min(response.interval as u64);
                     self.leechers = self.leechers.max(response.leechers);
-                    self.seeders = self.seeders.max(response.seeders);  
+                    self.seeders = self.seeders.max(response.seeders);
                 }
 
-                self.sender.send(SessionEvent::AnnounceSuccess { peers, warning: None }).await.ok();
+                self.sender
+                    .send(SessionEvent::AnnounceSuccess {
+                        peers,
+                        warning: None,
+                    })
+                    .await
+                    .ok();
             }
         }
 

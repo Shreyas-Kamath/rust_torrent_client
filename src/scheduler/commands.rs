@@ -1,7 +1,4 @@
-use std::{
-    collections::HashSet,
-    net::SocketAddr,
-};
+use std::{collections::HashSet, net::SocketAddr};
 
 use bitvec::vec::BitVec;
 use slab::Slab;
@@ -9,10 +6,7 @@ use tokio::{sync::mpsc::Sender, time::Instant};
 
 use crate::{
     disk::DiskEvent,
-    peers::{
-        Peer,
-        PeerCommand,
-    },
+    peers::{Peer, PeerCommand},
 };
 
 pub enum SchedulerEvent {
@@ -57,7 +51,7 @@ pub struct Scheduler {
 
 pub struct InFlightBlock {
     pub request: BlockRequest,
-    pub sent_at: Instant
+    pub sent_at: Instant,
 }
 
 pub struct PeerHandle {
