@@ -116,7 +116,7 @@ impl Scheduler {
                 Some(cmd) = rx.recv() => {
                     match cmd {
                         SchedulerEvent::LaunchPeers { peers } => {
-                            println!("Received {} peers", peers.len());
+                            // println!("Received {} peers", peers.len());
                             self.dedup_and_start_peers(peers, peer_tx.clone()).await;
                         }
 
@@ -185,19 +185,19 @@ impl Scheduler {
     fn parse_completed_pieces(&mut self, bitfield: BitVec) {
         assert_eq!(bitfield.len(), self.pieces.len());
 
-        let mut completed = 0;
         for (bit, piece_buff) in zip(bitfield, &mut self.pieces) {
             if bit { 
-                completed += 1;
+                self.completed_pieces += 1;
                 piece_buff.complete = true; 
             }
         }
 
-        println!("Found {completed} completed pieces");
+        println!("Found {} completed pieces", self.completed_pieces);
     }
 
     fn scan_timeouts(&mut self) {
         let now = time::Instant::now();
+        let timeout = Duration::from_secs(REQUEST_TIMEOUT as u64);
 
         for (_, peer_handle) in &mut self.slots {
             let inflight = &mut peer_handle.in_flight;
@@ -205,7 +205,7 @@ impl Scheduler {
 
             while i < inflight.len() {
                 if now.duration_since(inflight[i].sent_at)
-                    >= Duration::from_secs(REQUEST_TIMEOUT as u64)
+                    >= timeout
                 {
                     let BlockRequest {
                         piece_index,
@@ -279,7 +279,6 @@ impl Scheduler {
             .try_remove(unique_id)
             .expect("Received removal event for unknown peer");
 
-        println!("Removed peer {unique_id}");
         self.existing_peers.remove(&removed.addr);
     }
 
@@ -300,8 +299,10 @@ impl Scheduler {
 
         if !am_interested {
             let _ = peer_handle.sender.send(PeerCommand::SendInterested).await;
+            peer_handle.am_interested = true;
         }
 
+        // println!("Handle have: Peer {}, interested: {}, choked: {}, in_flight: {}", slot_id, peer_handle.am_interested, peer_handle.am_choked, peer_handle.in_flight.len());
         self.maybe_push_blocks(slot_id).await;
     }
 
@@ -319,6 +320,7 @@ impl Scheduler {
 
         if peer_handle.am_choked {
             peer_handle.am_choked = false;
+            // println!("handle unchoke: Peer {}, interested: {}, choked: {}, in_flight: {}", slot_id, peer_handle.am_interested, peer_handle.am_choked, peer_handle.in_flight.len());
             self.maybe_push_blocks(slot_id).await;
         }
     }
@@ -370,6 +372,7 @@ impl Scheduler {
         }
 
         let blocks = self.push_blocks(slot_id, MAX_IN_FLIGHT - in_flight as u32);
+
         if !blocks.is_empty() {
             let peer_handle = self.slots.get_mut(slot_id).expect("Peer doesnt exist");
             let _ = peer_handle
@@ -437,16 +440,20 @@ impl Scheduler {
     // into the disk writer task for verification
     async fn handle_data(&mut self, slot_id: usize, piece: u32, begin: u32, data: Vec<u8>) {
         let peer_handle = self.slots.get_mut(slot_id).unwrap();
+        
+        // this is a bad hack, -8 because it includes the piece header, which should be removed
+        // but the borrow checker is too strict and does not allow &[u8] slices over async boundaries
         if let Some(pos) = peer_handle.in_flight.iter().position(|block| {
             block.request
                 == BlockRequest {
                     piece_index: piece,
                     offset: begin,
-                    len: data.len() as u32,
+                    len: (data.len() - 8) as u32,
                 }
         }) {
             peer_handle.in_flight.swap_remove(pos);
         }
+        // println!("Handle data after supposed removal from inflight: Peer {}, interested: {}, choked: {}, in_flight: {}", slot_id, peer_handle.am_interested, peer_handle.am_choked, peer_handle.in_flight.len());
 
         let begin = begin as usize;
         let block = begin / BLOCK_SIZE as usize;
@@ -474,6 +481,7 @@ impl Scheduler {
                 .ok();
         }
 
+        // println!("Handle data before pushing blocks: Peer {}, interested: {}, choked: {}, in_flight: {}", slot_id, peer_handle.am_interested, peer_handle.am_choked, peer_handle.in_flight.len());
         self.maybe_push_blocks(slot_id).await;
     }
 

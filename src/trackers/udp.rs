@@ -276,9 +276,7 @@ impl UDPTracker {
                 SocketAddr::V6(_) if self.ipv6.is_none() => {
                     self.ipv6 = Some(UDPContext::new(addr).await?);
                 }
-                _ => {
-                    println!("What?");
-                }
+                _ => {}
             }
         }
 

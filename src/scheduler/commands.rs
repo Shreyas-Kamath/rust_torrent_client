@@ -31,7 +31,7 @@ pub enum BlockState {
     Received,
 }
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Debug)]
 pub struct BlockRequest {
     pub piece_index: u32,
     pub offset: u32,

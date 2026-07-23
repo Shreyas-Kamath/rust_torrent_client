@@ -87,9 +87,9 @@ impl Disk {
             .await
             .ok();
 
-        if let Some(savefile) = &mut self.savefile {
-            savefile.write_u32_le(piece).await.unwrap();
-        }
+        // if let Some(savefile) = &mut self.savefile {
+        //     savefile.write_u32_le(piece).await.unwrap();
+        // }
     }
 
     fn do_hash(&self, piece: u32, data: &[u8]) -> bool {
