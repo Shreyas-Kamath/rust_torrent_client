@@ -14,6 +14,7 @@ pub enum PeerEvent {
     Connect {
         stream: TcpStream,
         peer: Peer,
+        incoming: bool,
     },
     ConnectFailed {
         peer: Peer,

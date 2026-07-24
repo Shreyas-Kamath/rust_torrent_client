@@ -330,10 +330,14 @@ pub async fn run_peer(
     peer_event_tx: Sender<PeerEvent>,
     peer_command_rx: Receiver<PeerCommand>,
     num_pieces: usize,
+    incoming: bool,
 ) {
     let tx_clone = peer_event_tx.clone();
 
-    if do_handshake(&mut stream, info_hash).await.is_err() {
+    if do_handshake(&mut stream, info_hash, incoming)
+        .await
+        .is_err()
+    {
         let _ = tx_clone.send(PeerEvent::Disconnect { slot_id }).await;
         return;
     }
@@ -358,7 +362,11 @@ pub async fn run_peer(
     let _ = tx_clone.send(PeerEvent::Disconnect { slot_id }).await;
 }
 
-async fn do_handshake(stream: &mut TcpStream, info_hash: [u8; 20]) -> tokio::io::Result<()> {
+async fn do_handshake(
+    stream: &mut TcpStream,
+    info_hash: [u8; 20],
+    incoming: bool,
+) -> tokio::io::Result<()> {
     let mut handshake_buf = [0u8; 68];
     handshake_buf[0] = 19;
     handshake_buf[1..1 + P_STR_PROTOCOL.len()].copy_from_slice(P_STR_PROTOCOL);
@@ -367,10 +375,12 @@ async fn do_handshake(stream: &mut TcpStream, info_hash: [u8; 20]) -> tokio::io:
 
     stream.write_all(&handshake_buf).await?;
 
-    let mut incoming_handshake_buff = [0u8; 68];
-    stream.read_exact(&mut incoming_handshake_buff).await?;
+    if !incoming {
+        let mut incoming_handshake_buff = [0u8; 68];
+        stream.read_exact(&mut incoming_handshake_buff).await?;
 
-    validate_handshake(&incoming_handshake_buff, info_hash)?;
+        validate_handshake(&incoming_handshake_buff, info_hash)?;
+    }
 
     Ok(())
 }

@@ -84,7 +84,7 @@ impl Scheduler {
         file_list: Option<Vec<File>>,
         disk_event_receiver: Receiver<DiskEvent>,
     ) -> tokio::io::Result<()> {
-        let (peer_tx, mut peer_rx) = mpsc::channel::<PeerEvent>(2000);
+        let (peer_tx, mut peer_rx) = mpsc::channel::<PeerEvent>(1500);
         let (disk_response_tx, mut disk_response_rx) = mpsc::channel::<DiskResponse>(1000);
 
         let disk = Disk::new(
@@ -119,10 +119,11 @@ impl Scheduler {
                             // println!("Received {} peers", peers.len());
                             self.dedup_and_start_peers(peers, peer_tx.clone()).await;
                         }
-
+                        SchedulerEvent::IncomingPeer { stream, peer } => {
+                            self.add_incoming_peer(stream, peer, peer_tx.clone()).await;
+                        }
                         // fetch stats
                         SchedulerEvent::FetchInfo => { todo!(); }
-
                         // kill all peers and remove (prepare for disconnect flood)
                         SchedulerEvent::ShutdownPeers => { todo!(); }
                     }
@@ -131,13 +132,13 @@ impl Scheduler {
                 //
                 Some(cmd) = peer_rx.recv() => {
                     match cmd {
-                        PeerEvent::Connect { stream, peer } => {
-                            self.existing_peers.insert(peer.addr);
+                        PeerEvent::Connect { stream, peer, incoming } => {
+                            debug_assert!(self.existing_peers.contains(&peer.addr));
 
                             let (tx, rx) = mpsc::channel::<PeerCommand>(100);
                             let peer_handle = PeerHandle::new(tx, peer.addr);
                             let slot_id = self.slots.insert(peer_handle);
-                            tokio::spawn(run_peer(slot_id, info_hash, stream, peer_tx.clone(), rx, self.num_pieces));
+                            tokio::spawn(run_peer(slot_id, info_hash, stream, peer_tx.clone(), rx, self.num_pieces, incoming));
                         }
 
                         PeerEvent::ConnectFailed { peer } => {
@@ -186,9 +187,9 @@ impl Scheduler {
         assert_eq!(bitfield.len(), self.pieces.len());
 
         for (bit, piece_buff) in zip(bitfield, &mut self.pieces) {
-            if bit { 
+            if bit {
                 self.completed_pieces += 1;
-                piece_buff.complete = true; 
+                piece_buff.complete = true;
             }
         }
 
@@ -199,14 +200,12 @@ impl Scheduler {
         let now = time::Instant::now();
         let timeout = Duration::from_secs(REQUEST_TIMEOUT as u64);
 
-        for (_, peer_handle) in &mut self.slots {
+        for (.., peer_handle) in self.slots.iter_mut() {
             let inflight = &mut peer_handle.in_flight;
             let mut i = 0;
 
             while i < inflight.len() {
-                if now.duration_since(inflight[i].sent_at)
-                    >= timeout
-                {
+                if now.duration_since(inflight[i].sent_at) >= timeout {
                     let BlockRequest {
                         piece_index,
                         offset,
@@ -241,8 +240,13 @@ impl Scheduler {
             tokio::spawn(async move {
                 match TcpStream::connect(peer.addr).await {
                     Ok(stream) => {
+                        // println!("Connecting to {:?}", stream.peer_addr());
                         peer_event_tx
-                            .send(PeerEvent::Connect { stream, peer })
+                            .send(PeerEvent::Connect {
+                                stream,
+                                peer,
+                                incoming: false,
+                            })
                             .await
                             .ok();
                     }
@@ -255,6 +259,27 @@ impl Scheduler {
                 }
             });
         }
+    }
+
+    async fn add_incoming_peer(
+        &mut self,
+        stream: TcpStream,
+        peer: Peer,
+        peer_tx: Sender<PeerEvent>,
+    ) {
+        if self.existing_peers.contains(&peer.addr) {
+            return;
+        }
+
+        self.existing_peers.insert(peer.addr);
+
+        let _ = peer_tx
+            .send(PeerEvent::Connect {
+                stream,
+                peer,
+                incoming: true,
+            })
+            .await;
     }
 
     fn remove_peer(&mut self, unique_id: usize) {
@@ -356,6 +381,7 @@ impl Scheduler {
         }
 
         // maybe request blocks here too?
+        self.maybe_push_blocks(slot_id).await;
     }
 
     // request iff I am interested, not choked, and I have <= max requests in flight / 2
@@ -440,7 +466,7 @@ impl Scheduler {
     // into the disk writer task for verification
     async fn handle_data(&mut self, slot_id: usize, piece: u32, begin: u32, data: Vec<u8>) {
         let peer_handle = self.slots.get_mut(slot_id).unwrap();
-        
+
         // this is a bad hack, -8 because it includes the piece header, which should be removed
         // but the borrow checker is too strict and does not allow &[u8] slices over async boundaries
         if let Some(pos) = peer_handle.in_flight.iter().position(|block| {

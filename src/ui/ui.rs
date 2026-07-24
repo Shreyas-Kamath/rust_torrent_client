@@ -4,7 +4,7 @@ use iced::{
 };
 use tokio::sync::mpsc;
 
-use crate::ui::commands::{App, Message, UIToClientCommand};
+use crate::ui::commands::{App, ClientCommand, Message};
 use rfd::{self, AsyncFileDialog};
 
 impl App {
@@ -27,7 +27,7 @@ impl App {
 
                 Task::perform(
                     async move {
-                        tx.send(UIToClientCommand::AddTorrent {
+                        tx.send(ClientCommand::AddTorrent {
                             path: handle.path().to_path_buf(),
                         })
                         .await
@@ -40,7 +40,7 @@ impl App {
             None => Task::none(),
         }
     }
-    pub fn new(client_tx: mpsc::Sender<UIToClientCommand>) -> Self {
+    pub fn new(client_tx: mpsc::Sender<ClientCommand>) -> Self {
         Self {
             torrent_count: 0,
             client_tx,

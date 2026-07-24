@@ -1,4 +1,4 @@
-use crate::client::ClientCommand;
+use crate::client::SessionCommand;
 use crate::disk::DiskEvent;
 use crate::parser::Torrent;
 use crate::scheduler::{Scheduler, SchedulerEvent};
@@ -36,11 +36,11 @@ impl Session {
         }
     }
 
-    async fn handle_command(&mut self, cmd: ClientCommand) {}
+    async fn handle_command(&mut self, cmd: SessionCommand) {}
 
     pub async fn run(
         mut self,
-        mut rx: tokio::sync::mpsc::Receiver<ClientCommand>,
+        mut rx: tokio::sync::mpsc::Receiver<SessionCommand>,
     ) -> tokio::io::Result<()> {
         // channels
         let (tracker_resp_sender, mut tracker_resp_receiver) = mpsc::channel(32);
@@ -92,7 +92,16 @@ impl Session {
                         }
                     }
                 }
-                // receive client commands later
+                Some(cmd) = rx.recv() => {
+                    match cmd {
+                        SessionCommand::IncomingPeer { stream, peer } => {
+                            let _ = scheduler_event_sender.send(SchedulerEvent::IncomingPeer { stream, peer }).await;
+                        }
+                        _ => {
+                            println!("Not implemented yet");
+                        }
+                    }
+                }
             }
         }
     }

@@ -1,12 +1,19 @@
 use std::net::{Ipv4Addr, Ipv6Addr};
 
-use crate::{parser::commands::Torrent, trackers::commands::TrackerResponse};
+use crate::{parser::Torrent, trackers::TrackerResponse};
 use serde_bencode;
 use serde_bencode::value::Value;
 use sha1::{Digest, Sha1};
 use std::net::SocketAddr;
+use tokio::{
+    io::{self, AsyncReadExt},
+    net::TcpStream,
+};
 
 use crate::peers::Peer;
+
+// duplicate
+const P_STR_PROTOCOL: &[u8] = b"BitTorrent protocol";
 
 pub fn parse_torrent(raw: &[u8]) -> Result<Torrent, String> {
     let mut result: Torrent = serde_bencode::from_bytes(raw).map_err(|e| e.to_string())?;
@@ -159,4 +166,27 @@ pub fn parse_peers(v4: &Value, v6: &Option<Value>) -> Vec<Peer> {
     }
 
     peers
+}
+
+pub async fn parse_incoming_handshake(
+    stream: &mut TcpStream,
+) -> io::Result<([u8; 20], Option<[u8; 20]>)> {
+    let mut buffer = [0u8; 68];
+    stream.read_exact(&mut buffer).await?;
+
+    if buffer[0] != 19 {
+        return Err(io::Error::other("Pstrlen is not 19"));
+    }
+
+    if buffer[1..20] != *P_STR_PROTOCOL {
+        return Err(io::Error::other("Protocol type does not match"));
+    }
+
+    // 8 bytes are feature flags (dht, pex etc..., very hard for me at this stage)
+
+    let mut info_hash = [0u8; 20];
+    info_hash.copy_from_slice(&buffer[28..48]);
+
+    // ignore peer id for now
+    Ok((info_hash, None))
 }
