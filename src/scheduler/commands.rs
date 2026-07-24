@@ -2,7 +2,7 @@ use std::{collections::HashSet, net::SocketAddr};
 
 use bitvec::vec::BitVec;
 use slab::Slab;
-use tokio::{sync::mpsc::Sender, time::Instant};
+use tokio::{net::TcpStream, sync::mpsc::Sender, time::Instant};
 
 use crate::{
     disk::DiskEvent,
@@ -11,7 +11,7 @@ use crate::{
 
 pub enum SchedulerEvent {
     LaunchPeers { peers: Vec<Peer> },
-
+    IncomingPeer { stream: TcpStream, peer: Peer },
     ShutdownPeers,
     FetchInfo,
 }

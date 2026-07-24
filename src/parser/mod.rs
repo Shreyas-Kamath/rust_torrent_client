@@ -1,8 +1,5 @@
 pub mod commands;
 pub mod parser;
 
-pub use parser::parse_peers;
-pub use parser::parse_response;
-pub use parser::parse_torrent;
-
 pub use commands::{File, Torrent};
+pub use parser::{parse_incoming_handshake, parse_peers, parse_response, parse_torrent};

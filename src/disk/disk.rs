@@ -4,7 +4,7 @@ use bitvec::bitvec;
 use sha1::{Digest, Sha1};
 use tokio::{
     fs,
-    io::{self, AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
+    io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
     sync::mpsc::{Receiver, Sender},
 };
 
@@ -52,13 +52,11 @@ impl Disk {
         let mut bitfield = bitvec!(0; self.piece_hashes.len());
 
         if let Some(savefile) = &mut self.savefile {
-            loop {
-                match savefile.read_u32_le().await {
-                    Ok(index) => bitfield.set(index as usize, true),
-                    Err(_) => break,
-                }
+            while let Ok(index) = savefile.read_u32_le().await {
+                bitfield.set(index as usize, true)
             }
         }
+
         self.disk_response_tx
             .send(DiskResponse::CompletedPieces { bitfield })
             .await
@@ -88,7 +86,10 @@ impl Disk {
             .ok();
 
         if let Some(savefile) = &mut self.savefile {
-            savefile.write_u32_le(piece).await.expect("Could not write to savefile");
+            savefile
+                .write_u32_le(piece)
+                .await
+                .expect("Could not write to savefile");
         }
     }
 
